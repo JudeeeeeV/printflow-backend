@@ -1,6 +1,5 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-expect-error
 import { JwtService as NestJwtService } from '@nestjs/jwt';
 
 export interface JwtPayload {

@@ -13,12 +13,12 @@ export class AuthService {
   constructor(private readonly supabaseService: SupabaseService) {}
 
   async register(registerDto: RegisterDto) {
-    const { email, password, accountType } = registerDto;
+    const { email, password, accountType, shopName } = registerDto;
     const supabase = this.supabaseService.getClient();
 
     // Ensure it matches the DB exactly
     const dbRole = accountType === 'Print Shop' ? 'CLERK' : 'STUDENT';
-
+    
     const { data: authData, error: authError } = await supabase.auth.signUp({
       email,
       password,
@@ -37,7 +37,20 @@ export class AuthService {
       throw new InternalServerErrorException('Failed to create user account');
     }
 
-    // The database trigger handled it for us.
+    // The database trigger handles inserting into `users` table
+    
+    // If it's a Print Shop, create a shop record linked to this user
+    if (accountType === 'Print Shop' && shopName) {
+      const { error: shopError } = await supabase.from('shops').insert({
+        id: authData.user.id,
+        name: shopName,
+        status: 'OPEN',
+        verification_status: 'UNVERIFIED',
+      });
+      if (shopError) {
+        console.error('Failed to create shop record:', shopError);
+      }
+    }
 
     return {
       token: authData.session?.access_token || '',

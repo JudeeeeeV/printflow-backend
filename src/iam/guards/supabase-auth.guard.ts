@@ -15,7 +15,7 @@ export class SupabaseAuthGuard implements CanActivate {
     }
 
     const token = authHeader.split(' ')[1];
-    const supabase = this.supabaseService.getClient();
+    const supabase = this.supabaseService.getAdminClient();
 
     // Verify token with Supabase Auth
     const { data: { user }, error } = await supabase.auth.getUser(token);

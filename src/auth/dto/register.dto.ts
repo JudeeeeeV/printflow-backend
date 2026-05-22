@@ -4,6 +4,7 @@ import {
   IsString,
   MinLength,
   IsIn,
+  IsOptional,
 } from 'class-validator';
 
 export class RegisterDto {
@@ -17,4 +18,8 @@ export class RegisterDto {
   @IsNotEmpty()
   @IsIn(['Student', 'Print Shop'], { message: 'Invalid account type' })
   accountType: string;
+
+  @IsOptional()
+  @IsString()
+  shopName?: string;
 }
