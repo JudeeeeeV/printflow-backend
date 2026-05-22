@@ -79,6 +79,7 @@ export class ShopsService {
   }
 
   async verifyPermit(shopId: string, file: Express.Multer.File) {
+    await this.ensurePermitsBucket();
     const supabase = this.supabaseService.getAdminClient();
 
     const fileName = `${shopId}-${Date.now()}-${file.originalname}`;
@@ -162,6 +163,7 @@ export class ShopsService {
   }
 
   async uploadGcashQr(shopId: string, file: Express.Multer.File) {
+    await this.ensureGcashQrsBucket();
     const supabase = this.supabaseService.getAdminClient();
 
     const fileName = `${shopId}-${Date.now()}-${file.originalname}`;
