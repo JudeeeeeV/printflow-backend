@@ -3,14 +3,66 @@ import {
   InternalServerErrorException,
   NotFoundException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../supabase/supabase.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UploadReceiptDto } from './dto/upload-receipt.dto';
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
+
   constructor(private readonly supabaseService: SupabaseService) {}
+
+  @Cron(CronExpression.EVERY_MINUTE)
+  async cleanupExpiredOrders() {
+    const supabase = this.supabaseService.getClient();
+    const expiryTime = new Date(Date.now() - 15 * 60000).toISOString();
+    
+    const { data, error } = await supabase
+      .from('orders')
+      .delete()
+      .eq('state', 'OPEN_INQUIRY')
+      .lt('created_at', expiryTime)
+      .select('id');
+
+    if (error) {
+      this.logger.error('Failed to cleanup expired orders: ' + error.message);
+    } else if (data && data.length > 0) {
+      this.logger.log(`Cleaned up ${data.length} expired orders.`);
+    }
+  }
+
+  async getUserOrders(userId: string) {
+    const supabase = this.supabaseService.getClient();
+    const { data, error } = await supabase
+      .from('orders')
+      .select('*, shops(name)')
+      .eq('client_id', userId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw new InternalServerErrorException('Failed to fetch orders: ' + error.message);
+    }
+    return data;
+  }
+
+  async getOrder(userId: string, orderId: string) {
+    const supabase = this.supabaseService.getClient();
+    const { data, error } = await supabase
+      .from('orders')
+      .select('*, shops(name)')
+      .eq('id', orderId)
+      .eq('client_id', userId)
+      .single();
+
+    if (error || !data) {
+      throw new NotFoundException('Order not found');
+    }
+    return data;
+  }
 
   async createOrder(userId: string, payload: CreateOrderDto) {
     const supabase = this.supabaseService.getClient();
@@ -120,5 +172,34 @@ export class OrdersService {
       message: 'Receipt uploaded successfully. Awaiting clerk verification.',
       state: 'AWAITING_PAYMENT',
     };
+  }
+
+  async cancelOrder(userId: string, orderId: string) {
+    const supabase = this.supabaseService.getClient();
+
+    const { data: order, error: fetchError } = await supabase
+      .from('orders')
+      .select('state')
+      .eq('id', orderId)
+      .eq('client_id', userId)
+      .single();
+
+    if (fetchError || !order) {
+      throw new NotFoundException('Order not found or access denied.');
+    }
+
+    const { error: deleteError } = await supabase
+      .from('orders')
+      .delete()
+      .eq('id', orderId)
+      .eq('client_id', userId);
+
+    if (deleteError) {
+      throw new InternalServerErrorException(
+        'Failed to cancel order: ' + deleteError.message,
+      );
+    }
+
+    return { message: 'Order cancelled successfully' };
   }
 }

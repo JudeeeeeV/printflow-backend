@@ -31,3 +31,4 @@ export class SupabaseService {
     return this.supabase;
   }
 }
+// Trigger hot-reload
