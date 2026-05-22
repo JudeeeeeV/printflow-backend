@@ -58,23 +58,28 @@ export class AuthService {
         password,
       });
 
-    if (authError) {
-      throw new UnauthorizedException(authError.message);
-    }
+    if (authError) throw new UnauthorizedException(authError.message);
 
-    if (!authData.user) {
-      throw new InternalServerErrorException('Login failed: User data missing');
-    }
+    // --- DEBUGGING BLOCK ---
+    console.log('Searching for User ID:', authData.user.id);
 
-    const { data: userData, error: userError } = await supabase
+    const { data: users, error: userError } = await supabase
       .from('users')
       .select('role')
-      .eq('id', authData.user.id)
-      .single();
+      .eq('id', authData.user.id);
 
-    if (userError || !userData) {
+    console.log('Query result:', users);
+    console.log('Query error:', userError);
+
+    if (userError) {
+      throw new InternalServerErrorException('Database access error.');
+    }
+
+    const userData = users && users.length > 0 ? users[0] : null;
+
+    if (!userData) {
       throw new InternalServerErrorException(
-        'Login successful, but failed to retrieve user profile data.',
+        'Account profile found, but record is unreadable.',
       );
     }
 
