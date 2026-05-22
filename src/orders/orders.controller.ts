@@ -36,13 +36,18 @@ export class OrdersController {
 
   @Post()
   @Roles('STUDENT')
+  @UseInterceptors(FileInterceptor('file'))
   async createOrder(
     @Body() createOrderDto: CreateOrderDto,
+    @UploadedFile() file: Express.Multer.File,
     @Req() req: Request,
   ) {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment,@typescript-eslint/no-unsafe-member-access
     const userId = (req as any).user.id;
-    return this.ordersService.createOrder(userId, createOrderDto);
+    if (!file) {
+      throw new BadRequestException('Asset file is required');
+    }
+    return this.ordersService.createOrder(userId, createOrderDto, file);
   }
 
   @Post(':id/receipt')

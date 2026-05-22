@@ -52,7 +52,7 @@ export class OrdersService {
     const supabase = this.supabaseService.getAdminClient();
     const { data, error } = await supabase
       .from('orders')
-      .select('*, payment_receipts(*)')
+      .select('*, payment_receipts(*), assets(*)')
       .eq('shop_id', shopId)
       .order('created_at', { ascending: false });
 
@@ -66,7 +66,7 @@ export class OrdersService {
     const supabase = this.supabaseService.getAdminClient();
     const { data, error } = await supabase
       .from('orders')
-      .select('*, shops(name), payment_receipts(*)')
+      .select('*, shops(name, gcash_qr_url), payment_receipts(*)')
       .eq('id', orderId)
       .eq('client_id', userId)
       .single();
@@ -77,7 +77,7 @@ export class OrdersService {
     return data;
   }
 
-  async createOrder(userId: string, payload: CreateOrderDto) {
+  async createOrder(userId: string, payload: CreateOrderDto, file: Express.Multer.File) {
     const supabase = this.supabaseService.getAdminClient();
 
     // 1. Create the base order ledger entry
@@ -89,7 +89,7 @@ export class OrdersService {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         shop_id: payload.shopId,
         state: 'OPEN_INQUIRY',
-        total: 0.0, // In a full implementation, this is calculated via the shop's pricing matrix
+        total: 15.00, // Fixed baseline fee for prototype
       })
       .select()
       .single();
@@ -100,12 +100,33 @@ export class OrdersService {
       );
     }
 
-    // 2. Link the design asset to the newly created order
+    // 2. Upload the raw design asset to the 'assets' bucket
+    await this.ensureAssetsBucket();
+    const fileName = `${userId}-${order.id}-${Date.now()}-${file.originalname}`;
+    const { data: uploadData, error: uploadError } = await supabase
+      .storage
+      .from('assets')
+      .upload(fileName, file.buffer, {
+        contentType: file.mimetype,
+      });
+
+    if (uploadError) {
+      throw new InternalServerErrorException(`Failed to upload asset: ${uploadError.message}`);
+    }
+
+    const { data: urlData } = supabase
+      .storage
+      .from('assets')
+      .getPublicUrl(fileName);
+
+    const publicUrl = urlData.publicUrl;
+
+    // 3. Link the design asset to the newly created order
     const { error: assetError } = await supabase.from('assets').insert({
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       order_id: order.id,
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      file_url: payload.assetUrl,
+      file_url: publicUrl,
       dpi: 300, // Baseline required by application logic
       file_type: 'PDF',
     });
@@ -136,6 +157,19 @@ export class OrdersService {
     if (!buckets?.find(b => b.name === 'receipts')) {
       const { error: createError } = await supabase.storage.createBucket('receipts', { public: true });
       if (createError) throw new InternalServerErrorException(`Failed to create receipts bucket: ${createError.message}`);
+    }
+  }
+
+  async ensureAssetsBucket() {
+    const supabase = this.supabaseService.getAdminClient();
+    const { data: buckets, error: listError } = await supabase.storage.listBuckets();
+    if (listError) {
+      this.logger.error("Error listing buckets:", listError);
+      throw new InternalServerErrorException(`Failed to list buckets: ${listError.message}`);
+    }
+    if (!buckets?.find(b => b.name === 'assets')) {
+      const { error: createError } = await supabase.storage.createBucket('assets', { public: true });
+      if (createError) throw new InternalServerErrorException(`Failed to create assets bucket: ${createError.message}`);
     }
   }
 

@@ -5,7 +5,4 @@ export class CreateOrderDto {
   @IsNotEmpty()
   shopId: string;
 
-  @IsUrl({}, { message: 'Asset URL must be a valid URL' })
-  @IsNotEmpty()
-  assetUrl: string;
 }

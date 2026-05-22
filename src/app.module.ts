@@ -9,6 +9,7 @@ import { AuthModule } from './auth/auth.module';
 import { ShopsModule } from './shops/shops.module';
 import { OrdersModule } from './orders/orders.module';
 import { AdminModule } from './admin/admin.module';
+import { EdgeModule } from './edge/edge.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { AdminModule } from './admin/admin.module';
     ShopsModule,
     OrdersModule,
     AdminModule,
+    EdgeModule,
   ],
   controllers: [AppController],
   providers: [AppService],
