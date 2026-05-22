@@ -3,9 +3,16 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { SupabaseModule } from './supabase/supabase.module';
 import { IamModule } from './iam/iam.module';
+import { ConfigModule } from '@nestjs/config';
+import { AuthModule } from './auth/auth.module';
 
 @Module({
-  imports: [SupabaseModule, IamModule],
+  imports: [
+    ConfigModule.forRoot({ isGlobal: true }),
+    SupabaseModule,
+    IamModule,
+    AuthModule,
+  ],
   controllers: [AppController],
   providers: [AppService],
 })
