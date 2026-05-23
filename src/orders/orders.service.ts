@@ -81,9 +81,10 @@ export class OrdersService {
   async getDrafts(userId: string) {
     const supabase = this.supabaseService.getAdminClient();
     
+    // Ensure shop_id and assets(file_url) are included in the select query
     const { data, error } = await supabase
       .from('orders')
-      .select('id, total, created_at, shops(name), assets(file_url)')
+      .select('id, total, created_at, shop_id, shops(name), assets(file_url)')
       .eq('client_id', userId)
       .eq('state', 'DRAFT') 
       .order('created_at', { ascending: false });
@@ -93,19 +94,23 @@ export class OrdersService {
     }
 
     return data.map((order: any) => {
-      // Extract the original filename from the Supabase storage URL
+      let fileUrl = '';
       let fileName = 'Design File';
+      
       if (order.assets && order.assets.length > 0 && order.assets[0].file_url) {
-        const urlParts = order.assets[0].file_url.split('/');
+        fileUrl = order.assets[0].file_url;
+        const urlParts = fileUrl.split('/');
         fileName = decodeURIComponent(urlParts[urlParts.length - 1]);
       }
 
       return {
         id: order.id,
+        shopId: order.shop_id, 
         shopName: order.shops?.name || 'Unknown Shop',
         fileName: fileName,
+        fileUrl: fileUrl,      
         total: order.total,
-        updatedAt: order.created_at, // Map created_at to the frontend's updatedAt
+        updatedAt: order.created_at,
       };
     });
   }
