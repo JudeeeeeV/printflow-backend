@@ -40,6 +40,7 @@ export class OrdersService {
       .from('orders')
       .select('*, shops(name)')
       .eq('client_id', userId)
+      .neq('state', 'DRAFT')
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -77,8 +78,94 @@ export class OrdersService {
     return data;
   }
 
+  async getDrafts(userId: string) {
+    const supabase = this.supabaseService.getAdminClient();
+    
+    const { data, error } = await supabase
+      .from('orders')
+      .select('id, total, created_at, shops(name), assets(file_url)')
+      .eq('client_id', userId)
+      .eq('state', 'DRAFT') 
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw new InternalServerErrorException('Failed to fetch drafts: ' + error.message);
+    }
+
+    return data.map((order: any) => {
+      // Extract the original filename from the Supabase storage URL
+      let fileName = 'Design File';
+      if (order.assets && order.assets.length > 0 && order.assets[0].file_url) {
+        const urlParts = order.assets[0].file_url.split('/');
+        fileName = decodeURIComponent(urlParts[urlParts.length - 1]);
+      }
+
+      return {
+        id: order.id,
+        shopName: order.shops?.name || 'Unknown Shop',
+        fileName: fileName,
+        total: order.total,
+        updatedAt: order.created_at, // Map created_at to the frontend's updatedAt
+      };
+    });
+  }
+
+  async submitDraft(userId: string, draftId: string) {
+    const supabase = this.supabaseService.getAdminClient();
+
+    const { data: order, error: fetchError } = await supabase
+      .from('orders')
+      .select('state')
+      .eq('id', draftId)
+      .eq('client_id', userId)
+      .single();
+
+    if (fetchError || !order) {
+      throw new NotFoundException('Draft not found');
+    }
+
+    if (order.state !== 'DRAFT') {
+      throw new BadRequestException('Order is not a draft.');
+    }
+
+    const { error: updateError } = await supabase
+      .from('orders')
+      .update({ 
+        state: 'OPEN_INQUIRY',
+        created_at: new Date().toISOString() // This resets the 15-minute clock!
+      })
+      .eq('id', draftId);
+
+    if (updateError) {
+      throw new InternalServerErrorException('Failed to submit draft: ' + updateError.message);
+    }
+
+    return { message: 'Draft submitted successfully', orderId: draftId };
+  }
+
+  async deleteDraft(userId: string, draftId: string) {
+    const supabase = this.supabaseService.getAdminClient();
+
+    const { error: deleteError } = await supabase
+      .from('orders')
+      .delete()
+      .eq('id', draftId)
+      .eq('client_id', userId)
+      .eq('state', 'DRAFT'); // Ensure only drafts can be deleted via this method
+
+    if (deleteError) {
+      throw new InternalServerErrorException('Failed to delete draft: ' + deleteError.message);
+    }
+
+    return { message: 'Draft deleted successfully' };
+  }
+
   async createOrder(userId: string, payload: CreateOrderDto, file: Express.Multer.File) {
     const supabase = this.supabaseService.getAdminClient();
+    
+    // Evaluate the string sent by FormData
+    const isDraftOrder = payload.isDraft === 'true';
+    const initialState = isDraftOrder ? 'DRAFT' : 'OPEN_INQUIRY';
 
     // 1. Create the base order ledger entry
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
@@ -88,8 +175,8 @@ export class OrdersService {
         client_id: userId,
         // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         shop_id: payload.shopId,
-        state: 'OPEN_INQUIRY',
-        total: 15.00, // Fixed baseline fee for prototype
+        state: initialState,
+        total: 15.00, 
       })
       .select()
       .single();

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, Body, Param, Req, UseGuards, UseInterceptors, UploadedFile, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Patch, Body, Param, Req, UseGuards, UseInterceptors, UploadedFile, BadRequestException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -27,6 +27,13 @@ export class OrdersController {
     return this.ordersService.getShopOrders(shopId);
   }
 
+  @Get('drafts')
+  @Roles('STUDENT')
+  async getDrafts(@Req() req: Request) {
+    const userId = (req as any).user.id;
+    return this.ordersService.getDrafts(userId);
+  }
+
   @Get(':id')
   @Roles('STUDENT')
   async getOrder(@Param('id') orderId: string, @Req() req: Request) {
@@ -47,7 +54,28 @@ export class OrdersController {
     if (!file) {
       throw new BadRequestException('Asset file is required');
     }
+    // createOrderDto will now optionally carry the { isDraft: true } flag from the frontend
     return this.ordersService.createOrder(userId, createOrderDto, file);
+  }
+
+  @Patch(':id/submit')
+  @Roles('STUDENT')
+  async submitDraft(
+    @Param('id') draftId: string,
+    @Req() req: Request,
+  ) {
+    const userId = (req as any).user.id;
+    return this.ordersService.submitDraft(userId, draftId);
+  }
+
+  @Delete(':id/draft')
+  @Roles('STUDENT')
+  async deleteDraft(
+    @Param('id') draftId: string,
+    @Req() req: Request,
+  ) {
+    const userId = (req as any).user.id;
+    return this.ordersService.deleteDraft(userId, draftId);
   }
 
   @Post(':id/receipt')
