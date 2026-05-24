@@ -1,5 +1,4 @@
-import { IsString, IsUrl, IsNotEmpty, IsUUID } from 'class-validator';
-import { IsBoolean, IsOptional } from 'class-validator';
+import { IsString, IsNotEmpty, IsUUID, IsOptional } from 'class-validator';
 
 export class CreateOrderDto {
   @IsUUID("all", { message: 'Invalid Shop ID format' })
@@ -7,6 +6,14 @@ export class CreateOrderDto {
   shopId: string;
 
   @IsOptional()
-    @IsString()
-    isDraft?: string;
+  @IsString()
+  isDraft?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  paperSize: string;
+
+  @IsString()
+  @IsNotEmpty()
+  printColorMode: string;
 }

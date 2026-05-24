@@ -41,7 +41,7 @@ socket.on('batch_execute', (payload) => {
 
     // Simulate sending to spooler
     setTimeout(() => {
-      console.log(`Simulating SPOOLER for order ${order.id}`);
+      console.log(`Simulating SPOOLER for order ${order.id}. Color Mode: ${order.print_color_mode}`);
       socket.emit('job_status_update', {
         orderId: order.id,
         shopId: SHOP_ID,

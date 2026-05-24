@@ -73,8 +73,12 @@ socket.on('batch_execute', async (payload) => {
 
       // Send to actual Windows printer queue targeting the selected printer
       const options = payload.printerName ? { printer: payload.printerName } : {};
+      if (order.print_color_mode === 'BLACK_AND_WHITE') {
+        options.monochrome = true;
+      }
+      
       await ptp.print(tempFilePath, options);
-      console.log(`    Physical print job dispatched to hardware (${payload.printerName || 'Default Printer'}).`);
+      console.log(`    Physical print job dispatched to hardware (${payload.printerName || 'Default Printer'}). Color Mode: ${order.print_color_mode}`);
 
       // 3. Complete
       socket.emit('job_status_update', { orderId: order.id, shopId: SHOP_ID, status: 'COMPLETED' });

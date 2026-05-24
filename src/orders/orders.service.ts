@@ -5,6 +5,8 @@ import {
   BadRequestException,
   Logger,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { PDFDocument } from 'pdf-lib';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../supabase/supabase.service';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -174,6 +176,36 @@ export class OrdersService {
     const isDraftOrder = payload.isDraft === 'true';
     const initialState = isDraftOrder ? 'DRAFT' : 'OPEN_INQUIRY';
 
+    // Fetch shop pricing matrix
+    const { data: shop, error: shopError } = await supabase
+      .from('shops')
+      .select('pricing_matrix')
+      .eq('id', payload.shopId)
+      .single();
+
+    if (shopError || !shop) {
+      throw new InternalServerErrorException('Failed to fetch shop details.');
+    }
+
+    const pricingMatrix = shop.pricing_matrix || {
+      paper_sizes: { "SHORT": 2.00, "A4": 3.00, "LONG": 4.00 },
+      color_mode_multipliers: { "BLACK_AND_WHITE": 0.00, "COLOR": 3.00 }
+    };
+
+    let pageCount = 1;
+    if (file.mimetype === 'application/pdf') {
+      try {
+        const pdfDoc = await PDFDocument.load(file.buffer);
+        pageCount = pdfDoc.getPageCount();
+      } catch (e) {
+        console.warn('Failed to parse PDF on backend, defaulting to 1 page:', e);
+      }
+    }
+
+    const basePrice = pricingMatrix.paper_sizes[payload.paperSize] || 3.00;
+    const colorAdditive = pricingMatrix.color_mode_multipliers[payload.printColorMode] || 0.00;
+    const calculatedTotal = (basePrice + colorAdditive) * pageCount;
+
     // 1. Create the base order ledger entry
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const { data: order, error: orderError } = await supabase
@@ -183,7 +215,10 @@ export class OrdersService {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         shop_id: payload.shopId,
         state: initialState,
-        total: 15.00, 
+        total: calculatedTotal,
+        print_color_mode: payload.printColorMode,
+        paper_size: payload.paperSize,
+        page_count: pageCount
       })
       .select()
       .single();

@@ -21,7 +21,7 @@ export class PrintSpoolerService {
     // Validate that orders are IN_PRODUCTION and belong to this shop
     const { data: orders, error } = await supabase
       .from('orders')
-      .select('id, state, assets(file_url)')
+      .select('id, state, print_color_mode, assets(file_url)')
       .eq('shop_id', shopId)
       .in('id', orderIds);
 
@@ -49,7 +49,8 @@ export class PrintSpoolerService {
       
       payload.push({
         id: order.id,
-        file_url: signedUrl
+        file_url: signedUrl,
+        print_color_mode: order.print_color_mode
       });
     }
 
