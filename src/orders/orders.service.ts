@@ -100,7 +100,9 @@ export class OrdersService {
       if (order.assets && order.assets.length > 0 && order.assets[0].file_url) {
         fileUrl = order.assets[0].file_url;
         const urlParts = fileUrl.split('/');
-        fileName = decodeURIComponent(urlParts[urlParts.length - 1]);
+        let rawName = decodeURIComponent(urlParts[urlParts.length - 1]);
+        const match = rawName.match(/-\d{13}-(.+)$/);
+        fileName = match ? match[1] : rawName;
       }
 
       return {

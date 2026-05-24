@@ -38,6 +38,32 @@ export class ShopsService {
     return data;
   }
 
+  async updateShop(shopId: string, updateData: { name?: string, location?: string, description?: string }) {
+    const supabase = this.supabaseService.getAdminClient();
+    
+    // Map frontend fields to DB fields if needed, currently DB has 'name'. 
+    // We'll update what's provided. Assuming 'location' or 'description' exist, if not, Supabase ignores or throws.
+    // Let's check what fields exist or just pass them in.
+    const payload: any = {};
+    if (updateData.name !== undefined) payload.name = updateData.name;
+    // Commmented out because these columns do not exist in the 'shops' table yet
+    // if (updateData.location !== undefined) payload.location = updateData.location;
+    // if (updateData.description !== undefined) payload.description = updateData.description;
+
+    const { data, error } = await supabase
+      .from('shops')
+      .update(payload)
+      .eq('id', shopId)
+      .select()
+      .single();
+
+    if (error) {
+      throw new InternalServerErrorException(`Failed to update shop: ${error.message}`);
+    }
+
+    return data;
+  }
+
   async ensurePermitsBucket() {
     const supabase = this.supabaseService.getAdminClient();
     const { data: buckets, error: listError } = await supabase.storage.listBuckets();

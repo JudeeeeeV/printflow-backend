@@ -10,6 +10,7 @@ import { ShopsModule } from './shops/shops.module';
 import { OrdersModule } from './orders/orders.module';
 import { AdminModule } from './admin/admin.module';
 import { EdgeModule } from './edge/edge.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { EdgeModule } from './edge/edge.module';
     OrdersModule,
     AdminModule,
     EdgeModule,
+    AnalyticsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
