@@ -43,4 +43,22 @@ export class AdminController {
   async addAdmin(@Body() body: any) {
     return this.adminService.addAdmin(body.email, body.password);
   }
+
+  @Get('disputes')
+  @UseGuards(AdminAuthGuard)
+  async getDisputes() {
+    return this.adminService.getDisputes();
+  }
+
+  @Post('orders/:id/force-approve')
+  @UseGuards(AdminAuthGuard)
+  async forceApproveOrder(@Param('id') orderId: string) {
+    return this.adminService.forceApproveOrder(orderId);
+  }
+
+  @Post('orders/:id/uphold-rejection')
+  @UseGuards(AdminAuthGuard)
+  async upholdRejection(@Param('id') orderId: string) {
+    return this.adminService.upholdRejection(orderId);
+  }
 }

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, Patch, Body, Param, Req, UseGuards, UseInterceptors, UploadedFile, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Patch, Body, Param, Req, UseGuards, UseInterceptors, UploadedFile, BadRequestException, Query } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -15,9 +15,15 @@ export class OrdersController {
 
   @Get()
   @Roles('STUDENT')
-  async getUserOrders(@Req() req: Request) {
+  async getUserOrders(
+    @Req() req: Request,
+    @Query('sortByDate') sortByDate?: 'asc' | 'desc',
+    @Query('status') status?: string,
+    @Query('page') page: string = '1',
+    @Query('limit') limit: string = '10',
+  ) {
     const userId = (req as any).user.id;
-    return this.ordersService.getUserOrders(userId);
+    return this.ordersService.getUserOrders(userId, sortByDate, status, parseInt(page, 10), parseInt(limit, 10));
   }
 
   @Get('shop')
@@ -29,9 +35,13 @@ export class OrdersController {
 
   @Get('drafts')
   @Roles('STUDENT')
-  async getDrafts(@Req() req: Request) {
+  async getDrafts(
+    @Req() req: Request,
+    @Query('page') page: string = '1',
+    @Query('limit') limit: string = '10',
+  ) {
     const userId = (req as any).user.id;
-    return this.ordersService.getDrafts(userId);
+    return this.ordersService.getDrafts(userId, parseInt(page, 10), parseInt(limit, 10));
   }
 
   @Get(':id')
@@ -114,5 +124,19 @@ export class OrdersController {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment,@typescript-eslint/no-unsafe-member-access
     const userId = (req as any).user.id;
     return this.ordersService.cancelOrder(userId, orderId);
+  }
+
+  @Post(':id/dispute-payment')
+  @Roles('STUDENT')
+  async disputePayment(
+    @Param('id') orderId: string,
+    @Body('reason') reason: string,
+    @Req() req: Request,
+  ) {
+    if (!reason || reason.trim().length === 0) {
+      throw new BadRequestException('A reason must be provided for the dispute.');
+    }
+    const userId = (req as any).user.id;
+    return this.ordersService.disputePayment(userId, orderId, reason);
   }
 }

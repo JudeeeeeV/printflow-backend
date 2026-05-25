@@ -22,33 +22,58 @@ export class OrdersService {
     const supabase = this.supabaseService.getAdminClient();
     const expiryTime = new Date(Date.now() - 15 * 60000).toISOString();
     
-    const { data, error } = await supabase
+    const { data: draftData, error: draftError } = await supabase
       .from('orders')
       .delete()
       .eq('state', 'OPEN_INQUIRY')
       .lt('created_at', expiryTime)
       .select('id');
 
-    if (error) {
-      this.logger.error('Failed to cleanup expired orders: ' + error.message);
-    } else if (data && data.length > 0) {
-      this.logger.log(`Cleaned up ${data.length} expired orders.`);
+    if (draftError) {
+      this.logger.error('Failed to cleanup expired drafts: ' + draftError.message);
+    } else if (draftData && draftData.length > 0) {
+      this.logger.log(`Cleaned up ${draftData.length} expired drafts.`);
+    }
+
+    // Cleanup AWAITING_PAYMENT orders that have passed their 24-hour expiration window
+    const now = new Date().toISOString();
+    const { data: expiredOrders, error: expiredError } = await supabase
+      .from('orders')
+      .update({ state: 'EXPIRED' })
+      .eq('state', 'AWAITING_PAYMENT')
+      .lt('expires_at', now)
+      .select('id');
+
+    if (expiredError) {
+      this.logger.error('Failed to expire rejected orders: ' + expiredError.message);
+    } else if (expiredOrders && expiredOrders.length > 0) {
+      this.logger.log(`Expired ${expiredOrders.length} rejected orders.`);
     }
   }
 
-  async getUserOrders(userId: string) {
+  async getUserOrders(userId: string, sortByDate: 'asc' | 'desc' = 'desc', status?: string, page: number = 1, limit: number = 10) {
     const supabase = this.supabaseService.getAdminClient();
-    const { data, error } = await supabase
+    let query = supabase
       .from('orders')
-      .select('*, shops(name)')
+      .select('*, shops(name)', { count: 'exact' })
       .eq('client_id', userId)
       .neq('state', 'DRAFT')
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: sortByDate === 'asc' });
+
+    if (status && status !== 'All') {
+      query = query.eq('state', status);
+    }
+
+    const from = (page - 1) * limit;
+    const to = from + limit - 1;
+    query = query.range(from, to);
+
+    const { data, error, count } = await query;
 
     if (error) {
       throw new InternalServerErrorException('Failed to fetch orders: ' + error.message);
     }
-    return data;
+    return { data, total: count || 0 };
   }
 
   async getShopOrders(shopId: string) {
@@ -80,22 +105,26 @@ export class OrdersService {
     return data;
   }
 
-  async getDrafts(userId: string) {
+  async getDrafts(userId: string, page: number = 1, limit: number = 10) {
     const supabase = this.supabaseService.getAdminClient();
     
+    const from = (page - 1) * limit;
+    const to = from + limit - 1;
+
     // Ensure shop_id and assets(file_url) are included in the select query
-    const { data, error } = await supabase
+    const { data, error, count } = await supabase
       .from('orders')
-      .select('id, total, created_at, shop_id, shops(name), assets(file_url)')
+      .select('id, total, created_at, shop_id, shops(name), assets(file_url)', { count: 'exact' })
       .eq('client_id', userId)
       .eq('state', 'DRAFT') 
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .range(from, to);
 
     if (error) {
       throw new InternalServerErrorException('Failed to fetch drafts: ' + error.message);
     }
 
-    return data.map((order: any) => {
+    const mappedData = data.map((order: any) => {
       let fileUrl = '';
       let fileName = 'Design File';
       
@@ -117,6 +146,8 @@ export class OrdersService {
         updatedAt: order.created_at,
       };
     });
+    
+    return { data: mappedData, total: count || 0 };
   }
 
   async submitDraft(userId: string, draftId: string) {
@@ -372,6 +403,41 @@ export class OrdersService {
     };
   }
 
+  async disputePayment(userId: string, orderId: string, reason: string) {
+    const supabase = this.supabaseService.getAdminClient();
+
+    const { data: order, error: fetchError } = await supabase
+      .from('orders')
+      .select('state')
+      .eq('id', orderId)
+      .eq('client_id', userId)
+      .single();
+
+    if (fetchError || !order) {
+      throw new NotFoundException('Order not found or access denied.');
+    }
+
+    // Can only dispute if previously rejected and awaiting payment
+    if (order.state !== 'AWAITING_PAYMENT') {
+      throw new BadRequestException('Order is not in a state that can be disputed.');
+    }
+
+    const { error: updateError } = await supabase
+      .from('orders')
+      .update({ 
+        state: 'ESCALATED_DISPUTE',
+        dispute_reason: reason,
+        expires_at: null // Clear expiration timer during dispute
+      })
+      .eq('id', orderId);
+
+    if (updateError) {
+      throw new InternalServerErrorException('Failed to escalate dispute: ' + updateError.message);
+    }
+
+    return { message: 'Payment dispute escalated successfully.' };
+  }
+
   async verifyPayment(clerkId: string, orderId: string, action: 'APPROVE' | 'REJECT', reason?: string) {
     const supabase = this.supabaseService.getAdminClient();
 
@@ -409,8 +475,13 @@ export class OrdersService {
       return { message: 'Payment approved. Order is now in production.' };
     } else {
       // REJECT
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
       const { error: updateError } = await supabase.from('orders')
-        .update({ state: 'AWAITING_PAYMENT' })
+        .update({ 
+          state: 'AWAITING_PAYMENT',
+          shop_rejection_reason: reason || null,
+          expires_at: expiresAt
+        })
         .eq('id', orderId);
 
       if (updateError) throw new InternalServerErrorException('Failed to update order state.');

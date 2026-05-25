@@ -142,4 +142,59 @@ export class AdminService {
     
     return { message: 'Admin created successfully' };
   }
+
+  async getDisputes() {
+    const supabase = this.supabaseService.getAdminClient();
+    const { data, error } = await supabase
+      .from('orders')
+      .select('*, shops(name), payment_receipts(*)')
+      .eq('state', 'ESCALATED_DISPUTE')
+      .order('created_at', { ascending: false });
+
+    if (error) throw new InternalServerErrorException(error.message);
+    return data;
+  }
+
+  async forceApproveOrder(orderId: string) {
+    const supabase = this.supabaseService.getAdminClient();
+    
+    // Set payment_receipts verified=true
+    const { error: receiptError } = await supabase
+      .from('payment_receipts')
+      .update({ verified: true })
+      .eq('order_id', orderId);
+      
+    if (receiptError) throw new InternalServerErrorException('Failed to verify receipt: ' + receiptError.message);
+
+    // Update order state
+    const { error: orderError } = await supabase
+      .from('orders')
+      .update({ 
+        state: 'IN_PRODUCTION',
+        dispute_reason: null
+      })
+      .eq('id', orderId);
+      
+    if (orderError) throw new InternalServerErrorException('Failed to update order state: ' + orderError.message);
+
+    return { message: 'Order force approved successfully.' };
+  }
+
+  async upholdRejection(orderId: string) {
+    const supabase = this.supabaseService.getAdminClient();
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+    const { error: orderError } = await supabase
+      .from('orders')
+      .update({ 
+        state: 'AWAITING_PAYMENT',
+        dispute_reason: null,
+        expires_at: expiresAt
+      })
+      .eq('id', orderId);
+
+    if (orderError) throw new InternalServerErrorException('Failed to uphold rejection: ' + orderError.message);
+
+    return { message: 'Rejection upheld. Expiration timer restarted.' };
+  }
 }
