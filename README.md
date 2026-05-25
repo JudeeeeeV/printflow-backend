@@ -1,98 +1,93 @@
+<div align="center">
+
+# ⚙️ PrintFlow - Backend API & Edge Daemon
+
+<a href="https://readme-typing-svg.herokuapp.com">
+  <img src="https://readme-typing-svg.herokuapp.com/?lines=Central+Nervous+System;REST+API+&+WSS+Gateway;Powered+by+Node.js+&+NestJS&font=Inter&center=true&width=550&height=50&color=10B981&vCenter=true&size=22" alt="Typing SVG" />
+</a>
+
 <p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
+  <img src="https://img.shields.io/badge/Runtime-Node.js-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node.js" />
+  <img src="https://img.shields.io/badge/Framework-NestJS-E0234E?style=for-the-badge&logo=nestjs&logoColor=white" alt="NestJS" />
+  <img src="https://img.shields.io/badge/Database-PostgreSQL-4169E1?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL" />
+  <img src="https://img.shields.io/badge/Sockets-Socket.io-010101?style=for-the-badge&logo=socketdotio&logoColor=white" alt="Socket.io" />
+  <img src="https://img.shields.io/badge/AI-OpenAI-412991?style=for-the-badge&logo=openai&logoColor=white" alt="OpenAI" />
 </p>
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+</div>
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+<br />
 
-## Description
+## 📖 Context
+This Node.js/NestJS application is the central nervous system for CIT-U's PrintFlow. It houses the PostgreSQL database schema, the PayMongo webhook listeners, the OpenAI Agentic AI verification routes, and the Socket.io WSS Gateway that communicates with the physical print daemons installed on the shop computers.
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+---
 
-## Project setup
+## 🏗 Architecture Diagram
 
-```bash
-$ npm install
+```mermaid
+graph TD
+    S[Student<br/>React Frontend] -->|REST / Webhooks| B(Backend API<br/>Node.js/NestJS)
+    B <-->|Read / Write| DB[(PostgreSQL Database)]
+    B <-->|WSS Gateway| E[Edge Daemon<br/>Physical Shop PC]
+    E -->|Print Commands| W[Windows Spooler]
 ```
 
-## Compile and run the project
+---
 
-```bash
-# development
-$ npm run start
+## 🔄 Order State Machine
 
-# watch mode
-$ npm run start:dev
+The lifecycle of an order follows a strict state machine to ensure data integrity and proper payment procurement:
 
-# production mode
-$ npm run start:prod
+| State | Description |
+| :--- | :--- |
+| `OPEN_INQUIRY` | Order created, pricing auto-calculated, pending student payment submission. |
+| `AWAITING_PAYMENT` | Payment receipt submitted by student; awaiting shop verification. |
+| `PROOF_APPROVED` | Payment verified by the shop; document is cleared for printing. |
+| `IN_PRODUCTION` | The Edge Daemon has spooled the document to the physical printer. |
+| `READY_FOR_PICKUP` | Printing finished successfully. Student is notified. |
+| `COMPLETED` | Student has picked up the document. Transaction closed. |
+| `ESCALATED_DISPUTE` | Shop rejected the payment, and the student appealed to System Admins. |
+
+---
+
+## 🔐 Environment Variables
+
+Create a `.env` file in the root of the repository with the following keys:
+
+```env
+# Database Configuration
+DATABASE_URL=postgresql://user:password@localhost:5432/printflow
+
+# JWT Auth Configuration
+JWT_SECRET=your_super_secret_jwt_key_here
+
+# PayMongo Integration
+PAYMONGO_PUBLIC_KEY=pk_test_...
+PAYMONGO_SECRET_KEY=sk_test_...
+
+# OpenAI Configuration
+OPENAI_API_KEY=sk-...
 ```
 
-## Run tests
+---
 
+## 📡 Edge Daemon Setup
+
+Physical print shops must run the local daemon script to connect their local Windows Spooler to the cloud WSS Gateway.
+
+1. Locate the daemon script within the shop portal or backend utilities folder.
+2. Run the script on the shop's dedicated printing PC:
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+node physical-daemon.js --shopId="SHOP_UUID_HERE" --secret="SHOP_SECRET_HERE"
 ```
+3. The daemon will maintain a persistent WebSocket connection to the backend and listen for `IN_PRODUCTION` events to automatically spool documents.
 
-## Deployment
+---
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+## 👥 Contributors
+Proudly developed by the PrintFlow team:
+- **Jude Mikael Valencia**
+- **Karol Vincent Bebedor**
+- **Noeh Arbee Boiser**
+- **Aldrin Suse**
