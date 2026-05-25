@@ -19,7 +19,7 @@
 <br />
 
 ## 📖 Context
-This Node.js/NestJS application is the central nervous system for CIT-U's PrintFlow. It houses the PostgreSQL database schema, the PayMongo webhook listeners, the OpenAI Agentic AI verification routes, and the Socket.io WSS Gateway that communicates with the physical print daemons installed on the shop computers.
+This Node.js/NestJS application is the central nervous system for CIT-U's PrintFlow. It houses the PostgreSQL database schema, the OpenAI Agentic AI verification routes, and the Socket.io WSS Gateway that communicates with the physical print daemons installed on the shop computers.
 
 ---
 
@@ -27,7 +27,7 @@ This Node.js/NestJS application is the central nervous system for CIT-U's PrintF
 
 ```mermaid
 graph TD
-    S[Student<br/>React Frontend] -->|REST / Webhooks| B(Backend API<br/>Node.js/NestJS)
+    S[Student/Shop<br/>React Frontend] -->|REST / WebSockets| B(Backend API<br/>Node.js/NestJS)
     B <-->|Read / Write| DB[(PostgreSQL Database)]
     B <-->|WSS Gateway| E[Edge Daemon<br/>Physical Shop PC]
     E -->|Print Commands| W[Windows Spooler]
@@ -61,10 +61,6 @@ DATABASE_URL=postgresql://user:password@localhost:5432/printflow
 
 # JWT Auth Configuration
 JWT_SECRET=your_super_secret_jwt_key_here
-
-# PayMongo Integration
-PAYMONGO_PUBLIC_KEY=pk_test_...
-PAYMONGO_SECRET_KEY=sk_test_...
 
 # OpenAI Configuration
 OPENAI_API_KEY=sk-...
