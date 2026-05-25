@@ -34,16 +34,22 @@ export class AnalyticsService {
 
     const allOrders = orders || [];
     
+    // Define which states mean the order is completed
+    const completedStates = ['READY_FOR_PICKUP', 'COMPLETED', 'PRINTED'];
+    // Define which states mean the order has been paid
+    const paidStates = ['IN_PRODUCTION', 'READY_FOR_PICKUP', 'COMPLETED', 'PRINTED'];
+
     // Filter for completed/printed orders
-    const completedOrders = allOrders.filter(o => o.state === 'PRINTED');
+    const completedOrders = allOrders.filter(o => completedStates.includes(o.state));
     const completedOrdersCount = completedOrders.length;
     
-    // Filter for active orders
-    const activeOrders = allOrders.filter(o => o.state !== 'PRINTED' && o.state !== 'CANCELLED');
+    // Filter for active orders (not completed, not cancelled)
+    const activeOrders = allOrders.filter(o => !completedStates.includes(o.state) && o.state !== 'CANCELLED');
     const activeOrdersCount = activeOrders.length;
 
-    // Calculate total revenue from completed orders
-    const totalRevenue = completedOrders.reduce((sum, order) => sum + (Number(order.total) || 0), 0);
+    // Calculate total revenue from all paid orders
+    const paidOrders = allOrders.filter(o => paidStates.includes(o.state));
+    const totalRevenue = paidOrders.reduce((sum, order) => sum + (Number(order.total) || 0), 0);
 
     // Calculate unique customers
     const uniqueCustomers = new Set(allOrders.map(o => o.client_id)).size;
