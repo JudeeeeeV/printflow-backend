@@ -73,7 +73,18 @@ export class OrdersService {
     if (error) {
       throw new InternalServerErrorException('Failed to fetch orders: ' + error.message);
     }
-    return { data, total: count || 0 };
+
+    const totalItems = count || 0;
+    const totalPages = Math.max(1, Math.ceil(totalItems / limit));
+
+    return {
+      data,
+      meta: {
+        currentPage: page,
+        totalPages,
+        totalItems
+      }
+    };
   }
 
   async getShopOrders(shopId: string) {
@@ -147,7 +158,17 @@ export class OrdersService {
       };
     });
     
-    return { data: mappedData, total: count || 0 };
+    const totalItems = count || 0;
+    const totalPages = Math.max(1, Math.ceil(totalItems / limit));
+    
+    return {
+      data: mappedData,
+      meta: {
+        currentPage: page,
+        totalPages,
+        totalItems
+      }
+    };
   }
 
   async submitDraft(userId: string, draftId: string) {
