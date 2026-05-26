@@ -4,7 +4,7 @@ import { Socket } from 'socket.io';
 @Injectable()
 export class PayloadSanitizationGuard implements CanActivate {
   private readonly logger = new Logger(PayloadSanitizationGuard.name);
-  private readonly allowedExtensions = ['.pdf', '.png'];
+  private readonly allowedExtensions = ['.pdf', '.png', '.jpg', '.jpeg', '.webp'];
 
   canActivate(context: ExecutionContext): boolean {
     const data = context.switchToWs().getData();

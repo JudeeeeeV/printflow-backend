@@ -288,7 +288,7 @@ export class OrdersService {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       file_url: publicUrl,
       dpi: 300, // Baseline required by application logic
-      file_type: 'PDF',
+      file_type: file.mimetype.startsWith('image/') ? 'IMAGE' : 'PDF',
     });
 
     if (assetError) {
