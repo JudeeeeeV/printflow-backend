@@ -10,10 +10,10 @@ export class AnalyticsService {
   async getShopAnalytics(shopId: string, startDate?: string, endDate?: string) {
     const supabase = this.supabaseService.getAdminClient();
     
-    // Query all non-draft orders for the shop to get a complete picture
+    // Query all non-draft orders for the shop with expanded fields
     let query = supabase
       .from('orders')
-      .select('id, total, created_at, state, client_id, assets(file_url)')
+      .select('id, total, created_at, state, client_id, page_count, paper_size, print_color_mode, assets(file_url)')
       .eq('shop_id', shopId)
       .neq('state', 'DRAFT')
       .order('created_at', { ascending: false });
@@ -34,46 +34,67 @@ export class AnalyticsService {
 
     const allOrders = orders || [];
     
-    // Define which states mean the order is completed
+    // State classifications
     const completedStates = ['READY_FOR_PICKUP', 'COMPLETED', 'PRINTED'];
-    // Define which states mean the order has been paid
     const paidStates = ['IN_PRODUCTION', 'READY_FOR_PICKUP', 'COMPLETED', 'PRINTED'];
+    const escrowStates = ['AWAITING_PAYMENT', 'AWAITING_PAYMENT_VERIFICATION'];
 
-    // Filter for completed/printed orders
-    const completedOrders = allOrders.filter(o => completedStates.includes(o.state));
-    const completedOrdersCount = completedOrders.length;
-    
-    // Filter for active orders (not completed, not cancelled)
-    const activeOrders = allOrders.filter(o => !completedStates.includes(o.state) && o.state !== 'CANCELLED');
-    const activeOrdersCount = activeOrders.length;
-
-    // Calculate total revenue from all paid orders
+    // Filter by category
     const paidOrders = allOrders.filter(o => paidStates.includes(o.state));
-    const totalRevenue = paidOrders.reduce((sum, order) => sum + (Number(order.total) || 0), 0);
+    const completedOrders = allOrders.filter(o => completedStates.includes(o.state));
+    const escrowOrders = allOrders.filter(o => escrowStates.includes(o.state));
+    const activeOrders = allOrders.filter(o => !completedStates.includes(o.state) && o.state !== 'CANCELLED');
 
-    // Calculate unique customers
+    // --- KPI Metrics ---
+    const totalRevenue = paidOrders.reduce((sum, o) => sum + (Number(o.total) || 0), 0);
+    const pendingRevenue = escrowOrders.reduce((sum, o) => sum + (Number(o.total) || 0), 0);
+    const totalPagesPrinted = completedOrders.reduce((sum, o) => sum + (Number(o.page_count) || 0), 0);
+    const averageOrderValue = paidOrders.length > 0 ? totalRevenue / paidOrders.length : 0;
+    const activeQueueCount = activeOrders.length;
     const uniqueCustomers = new Set(allOrders.map(o => o.client_id)).size;
 
-    // Aggregate orders over time (for the line chart) using actual order dates
-    const volumeMap = new Map<string, number>();
-    allOrders.forEach(order => {
-      const dateObj = new Date(order.created_at);
-      const dateStr = dateObj.toLocaleDateString('en-US', { month: 'short', day: '2-digit' }); // e.g. "Apr 05"
-      volumeMap.set(dateStr, (volumeMap.get(dateStr) || 0) + 1);
+    // --- Distribution Metrics (from paid orders) ---
+    const colorSplit = { color: 0, bw: 0 };
+    paidOrders.forEach(o => {
+      if (o.print_color_mode === 'COLOR') {
+        colorSplit.color++;
+      } else {
+        colorSplit.bw++;
+      }
     });
 
-    // Convert map to array sorted by date (basic chronological sort assumes DB returned them recent first, but we reverse it for the chart to go left-to-right)
-    const printVolumeOverTime = Array.from(volumeMap.entries())
-      .map(([date, volume]) => ({ date, volume }))
+    const paperSplit: Record<string, number> = { SHORT: 0, A4: 0, LONG: 0 };
+    paidOrders.forEach(o => {
+      const size = o.paper_size || 'A4';
+      paperSplit[size] = (paperSplit[size] || 0) + 1;
+    });
+
+    // --- Time-Series: Daily Revenue + Daily Pages ---
+    const timeSeriesMap = new Map<string, { revenue: number; pages: number }>();
+    allOrders.forEach(order => {
+      const dateStr = new Date(order.created_at).toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
+      const existing = timeSeriesMap.get(dateStr) || { revenue: 0, pages: 0 };
+      
+      if (paidStates.includes(order.state)) {
+        existing.revenue += Number(order.total) || 0;
+      }
+      if (completedStates.includes(order.state)) {
+        existing.pages += Number(order.page_count) || 0;
+      }
+      
+      timeSeriesMap.set(dateStr, existing);
+    });
+
+    const printVolumeOverTime = Array.from(timeSeriesMap.entries())
+      .map(([date, data]) => ({ date, revenue: Math.round(data.revenue * 100) / 100, pages: data.pages }))
       .reverse();
       
-    // If no orders yet, provide empty data so the chart doesn't break
     if (printVolumeOverTime.length === 0) {
-      printVolumeOverTime.push({ date: 'Today', volume: 0 });
+      printVolumeOverTime.push({ date: 'Today', revenue: 0, pages: 0 });
     }
 
-    // Recent 3 orders for the "Recent Print Jobs" section
-    const recentOrders = allOrders.slice(0, 3).map(order => {
+    // --- Recent Orders (top 10 for the data table) ---
+    const recentOrders = allOrders.slice(0, 10).map(order => {
       let fileName = 'Unknown File';
       if (order.assets && order.assets.length > 0 && order.assets[0].file_url) {
         const urlParts = order.assets[0].file_url.split('/');
@@ -85,14 +106,23 @@ export class AnalyticsService {
         id: order.id,
         fileName,
         state: order.state,
+        total: Number(order.total) || 0,
+        pageCount: Number(order.page_count) || 0,
+        clientId: order.client_id,
+        createdAt: order.created_at,
       };
     });
 
     return {
       totalRevenue: totalRevenue.toFixed(2),
+      pendingRevenue: pendingRevenue.toFixed(2),
+      totalPagesPrinted,
+      averageOrderValue: averageOrderValue.toFixed(2),
+      activeQueueCount,
       uniqueCustomers,
-      completedOrdersCount,
-      activeOrdersCount,
+      completedOrdersCount: completedOrders.length,
+      colorSplit,
+      paperSplit,
       printVolumeOverTime,
       recentOrders,
     };
