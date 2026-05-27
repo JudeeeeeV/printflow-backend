@@ -24,6 +24,8 @@ export class EdgeDaemonGateway implements OnGatewayConnection, OnGatewayDisconne
   
   // Map of shopId to connected daemon socketId
   private connectedDaemons: Map<string, string> = new Map();
+  // Cache printers list per shop
+  private shopPrinters: Map<string, string[]> = new Map();
 
   constructor(private readonly supabaseService: SupabaseService) {}
 
@@ -50,6 +52,7 @@ export class EdgeDaemonGateway implements OnGatewayConnection, OnGatewayDisconne
 
     if (shopId && isDaemon) {
       this.connectedDaemons.delete(shopId);
+      this.shopPrinters.delete(shopId);
       this.logger.log(`Daemon disconnected for shop: ${shopId}`);
       // Notify clerk that daemon went offline
       this.server.to(`shop_${shopId}`).emit('daemon_status', { status: 'OFFLINE' });
@@ -91,11 +94,15 @@ export class EdgeDaemonGateway implements OnGatewayConnection, OnGatewayDisconne
   handleCheckStatus(@ConnectedSocket() client: Socket, @MessageBody() data: { shopId: string }) {
     const isOnline = this.connectedDaemons.has(data.shopId);
     client.emit('daemon_status', { status: isOnline ? 'CONNECTED' : 'OFFLINE' });
+    if (isOnline && this.shopPrinters.has(data.shopId)) {
+      client.emit('printers_list', this.shopPrinters.get(data.shopId));
+    }
   }
 
   @SubscribeMessage('daemon_printers_update')
   handleDaemonPrintersUpdate(@MessageBody() data: { shopId: string; printers: string[] }) {
     this.logger.log(`Received ${data.printers.length} printers from daemon for shop ${data.shopId}`);
+    this.shopPrinters.set(data.shopId, data.printers);
     this.server.to(`shop_${data.shopId}`).emit('printers_list', data.printers);
   }
 }
