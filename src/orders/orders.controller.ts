@@ -78,6 +78,17 @@ export class OrdersController {
     return this.ordersService.submitDraft(userId, draftId);
   }
 
+  @Patch(':id/update-draft')
+  @Roles('STUDENT')
+  async updateDraft(
+    @Param('id') draftId: string,
+    @Body() body: { shopId: string; paperSize: string; printColorMode: string; total: number; pageCount: number },
+    @Req() req: Request,
+  ) {
+    const userId = (req as any).user.id;
+    return this.ordersService.updateDraft(userId, draftId, body);
+  }
+
   @Delete(':id/draft')
   @Roles('STUDENT')
   async deleteDraft(
@@ -138,5 +149,16 @@ export class OrdersController {
     }
     const userId = (req as any).user.id;
     return this.ordersService.disputePayment(userId, orderId, reason);
+  }
+
+  @Patch(':id/state')
+  @Roles('CLERK', 'MANAGER')
+  async updateOrderState(
+    @Param('id') orderId: string,
+    @Body('state') state: string,
+    @Req() req: Request,
+  ) {
+    const shopId = (req as any).user.id;
+    return this.ordersService.updateOrderState(shopId, orderId, state);
   }
 }

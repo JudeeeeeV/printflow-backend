@@ -125,7 +125,7 @@ export class OrdersService {
     // Ensure shop_id and assets(file_url) are included in the select query
     const { data, error, count } = await supabase
       .from('orders')
-      .select('id, total, created_at, shop_id, shops(name), assets(file_url)', { count: 'exact' })
+      .select('id, total, created_at, shop_id, shops(name), assets(file_url), paper_size, print_color_mode, page_count', { count: 'exact' })
       .eq('client_id', userId)
       .eq('state', 'DRAFT') 
       .order('created_at', { ascending: false })
@@ -155,6 +155,9 @@ export class OrdersService {
         fileUrl: fileUrl,      
         total: order.total,
         updatedAt: order.created_at,
+        paperSize: order.paper_size,
+        printColorMode: order.print_color_mode,
+        pageCount: order.page_count
       };
     });
     
@@ -169,6 +172,38 @@ export class OrdersService {
         totalItems
       }
     };
+  }
+
+  async updateDraft(userId: string, draftId: string, payload: { shopId: string; paperSize: string; printColorMode: string; total: number; pageCount: number }) {
+    const supabase = this.supabaseService.getAdminClient();
+
+    const { data: order, error: fetchError } = await supabase
+      .from('orders')
+      .select('state')
+      .eq('id', draftId)
+      .eq('client_id', userId)
+      .single();
+
+    if (fetchError || !order || order.state !== 'DRAFT') {
+      throw new BadRequestException('Draft not found or not in draft state.');
+    }
+
+    const { error: updateError } = await supabase
+      .from('orders')
+      .update({
+        shop_id: payload.shopId,
+        paper_size: payload.paperSize,
+        print_color_mode: payload.printColorMode,
+        total: payload.total,
+        page_count: payload.pageCount
+      })
+      .eq('id', draftId);
+
+    if (updateError) {
+      throw new InternalServerErrorException('Failed to update draft: ' + updateError.message);
+    }
+
+    return { message: 'Draft updated successfully' };
   }
 
   async submitDraft(userId: string, draftId: string) {
@@ -543,5 +578,31 @@ export class OrdersService {
     }
 
     return { message: 'Order cancelled successfully' };
+  }
+
+  async updateOrderState(shopId: string, orderId: string, newState: string) {
+    const supabase = this.supabaseService.getAdminClient();
+
+    const { data: order, error: fetchError } = await supabase
+      .from('orders')
+      .select('state')
+      .eq('id', orderId)
+      .eq('shop_id', shopId)
+      .single();
+
+    if (fetchError || !order) {
+      throw new NotFoundException('Order not found or access denied.');
+    }
+
+    const { error: updateError } = await supabase
+      .from('orders')
+      .update({ state: newState })
+      .eq('id', orderId);
+
+    if (updateError) {
+      throw new InternalServerErrorException('Failed to update order state: ' + updateError.message);
+    }
+
+    return { message: 'Order state updated successfully', state: newState };
   }
 }
