@@ -65,9 +65,9 @@ export class PasswordResetService {
         text: `Your PrintFlow password reset code is ${code}. Enter it on the reset password screen. It expires in 10 minutes and can be used once. If you did not request this code, ignore this email.`,
       });
       if (!result.accepted?.length) throw new Error('Recipient not accepted');
-    } catch {
+    } catch (e: any) {
       await client.rpc('invalidate_reset_code', { p_email: email, p_request_id: requestId });
-      this.logger.error('Password reset SMTP delivery failed. Check SMTP credentials, sender verification and provider logs.');
+      this.logger.error(`Password Reset SMTP delivery failed: ${e.message}`, e.stack);
       throw new ServiceUnavailableException('We could not send your code. Please wait a minute and try again.');
     } finally { transport.close(); }
   }

@@ -30,13 +30,13 @@ begin
     if v_row.resend_at > now() then
       return greatest(1, ceil(extract(epoch from v_row.resend_at - now()))::integer);
     end if;
-    if v_row.window_started_at > now() - interval '1 hour' and v_row.sent_count >= 5 then
+    if v_row.window_started_at > now() - interval '1 hour' and v_row.sent_count >= 50 then
       return greatest(1, ceil(extract(epoch from v_row.window_started_at + interval '1 hour' - now()))::integer);
     end if;
   end if;
   insert into printflow_private.password_reset_codes as codes
     (email, request_id, token_hash, expires_at, resend_at)
-  values (p_email, p_request_id, p_token_hash, now() + interval '10 minutes', now() + interval '60 seconds')
+  values (p_email, p_request_id, p_token_hash, now() + interval '10 minutes', now() + interval '15 seconds')
   on conflict (email) do update set
     request_id = excluded.request_id, token_hash = excluded.token_hash,
     expires_at = excluded.expires_at, resend_at = excluded.resend_at, attempts = 0, consumed = false,

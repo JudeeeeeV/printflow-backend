@@ -65,9 +65,9 @@ export class SignupVerificationService {
         text: `Your PrintFlow verification code is ${code}. Enter it on the registration screen. It expires in 10 minutes and can be used once. If you did not request this code, ignore this email.`,
       });
       if (!result.accepted?.length) throw new Error('Recipient not accepted');
-    } catch {
+    } catch (e: any) {
       await client.rpc('invalidate_signup_code', { p_email: email, p_request_id: requestId });
-      this.logger.error('Signup SMTP delivery failed. Check SMTP credentials, sender verification and provider logs.');
+      this.logger.error(`Signup SMTP delivery failed: ${e.message}`, e.stack);
       throw new ServiceUnavailableException('We could not send your code. Please wait a minute and try again.');
     } finally { transport.close(); }
   }
