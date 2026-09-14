@@ -10,7 +10,7 @@ import { JwtModule } from '@nestjs/jwt';
     JwtModule.register({
       secret: process.env.JWT_SECRET || 'super_secret_admin_key_2026_printflow',
       signOptions: { expiresIn: '8h' },
-    })
+    }),
   ],
   controllers: [AdminController],
   providers: [AdminService],

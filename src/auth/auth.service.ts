@@ -22,7 +22,7 @@ export class AuthService {
     private readonly supabaseService: SupabaseService,
     private readonly signupVerification: SignupVerificationService,
     private readonly passwordReset: PasswordResetService,
-  ) { }
+  ) {}
 
   async register(registerDto: RegisterDto) {
     const email = registerDto.email.trim().toLowerCase();
@@ -33,9 +33,10 @@ export class AuthService {
 
   async sendPasswordReset(email: string) {
     const cleanEmail = email.trim().toLowerCase();
-    
+
     // Check if user exists
-    const { data: user, error } = await this.supabaseService.getAdminClient()
+    const { data: user, error } = await this.supabaseService
+      .getAdminClient()
       .from('users')
       .select('id')
       .eq('email', cleanEmail)
@@ -52,12 +53,13 @@ export class AuthService {
 
   async resetPassword(dto: ResetPasswordDto) {
     const email = dto.email.trim().toLowerCase();
-    
+
     // 1. Verify the OTP
     await this.passwordReset.consume(email, dto.code);
-    
+
     // 2. Find the user ID
-    const { data: user, error: userError } = await this.supabaseService.getAdminClient()
+    const { data: user, error: userError } = await this.supabaseService
+      .getAdminClient()
       .from('users')
       .select('id')
       .eq('email', email)
@@ -68,10 +70,9 @@ export class AuthService {
     }
 
     // 3. Update the password
-    const { error: updateError } = await this.supabaseService.getAdminClient().auth.admin.updateUserById(
-      user.id,
-      { password: dto.password }
-    );
+    const { error: updateError } = await this.supabaseService
+      .getAdminClient()
+      .auth.admin.updateUserById(user.id, { password: dto.password });
 
     if (updateError) {
       throw new InternalServerErrorException('Failed to update password.');
@@ -84,42 +85,62 @@ export class AuthService {
     const email = dto.email.trim().toLowerCase();
     // Atomic, one-time consumption must succeed before any account writes.
     await this.signupVerification.consume(email, dto.code);
-    const { data, error } = await this.supabaseService.getAdminClient().auth.admin.createUser({
-      email,
-      password: dto.password,
-      email_confirm: true,
-      app_metadata: {
-        signup_source: 'printflow_email_otp',
-        signup_role: dto.accountType === 'Print Shop' ? 'CLERK' : 'STUDENT',
-        ...(dto.accountType === 'Print Shop' ? { signup_shop_name: dto.shopName?.trim() } : {}),
-      },
-      user_metadata: {
-        role: dto.accountType === 'Print Shop' ? 'CLERK' : 'STUDENT',
-        ...(dto.accountType === 'Print Shop' ? { shop_name: dto.shopName?.trim() } : {}),
-      },
-    });
+    const { data, error } = await this.supabaseService
+      .getAdminClient()
+      .auth.admin.createUser({
+        email,
+        password: dto.password,
+        email_confirm: true,
+        app_metadata: {
+          signup_source: 'printflow_email_otp',
+          signup_role: dto.accountType === 'Print Shop' ? 'CLERK' : 'STUDENT',
+          ...(dto.accountType === 'Print Shop'
+            ? { signup_shop_name: dto.shopName?.trim() }
+            : {}),
+        },
+        user_metadata: {
+          role: dto.accountType === 'Print Shop' ? 'CLERK' : 'STUDENT',
+          ...(dto.accountType === 'Print Shop'
+            ? { shop_name: dto.shopName?.trim() }
+            : {}),
+        },
+      });
     if (error) {
       // Do not replace credentials or confirm an account from an earlier signup.
-      throw new BadRequestException(error.message + ' If you already registered, sign in. Otherwise request a new code to retry.');
+      throw new BadRequestException(
+        error.message +
+          ' If you already registered, sign in. Otherwise request a new code to retry.',
+      );
     }
     if (!data.user?.email_confirmed_at) {
-      throw new InternalServerErrorException('Account creation could not be completed. Please try signing in or contact support.');
+      throw new InternalServerErrorException(
+        'Account creation could not be completed. Please try signing in or contact support.',
+      );
     }
     await this.provisionVerifiedSignup(data.user.id);
     return { verified: true };
   }
 
   private async provisionVerifiedSignup(userId: string) {
-    const { error } = await this.supabaseService.getAdminClient().rpc('provision_verified_signup', { p_user_id: userId });
+    const { error } = await this.supabaseService
+      .getAdminClient()
+      .rpc('provision_verified_signup', { p_user_id: userId });
     if (error) {
-      this.logger.error(`Verified account provisioning failed (database code: ${error.code}).`);
-      throw new InternalServerErrorException('Your email is verified, but account setup could not finish. Try signing in again.');
+      this.logger.error(
+        `Verified account provisioning failed (database code: ${error.code}).`,
+      );
+      throw new InternalServerErrorException(
+        'Your email is verified, but account setup could not finish. Try signing in again.',
+      );
     }
   }
 
   async resendCode({ email }: ResendEmailOtpDto) {
     await this.signupVerification.send(email.trim().toLowerCase());
-    return { message: 'A new verification code has been sent. It expires in 10 minutes.' };
+    return {
+      message:
+        'A new verification code has been sent. It expires in 10 minutes.',
+    };
   }
   async login(loginDto: LoginDto) {
     const { email, password } = loginDto;
@@ -144,7 +165,8 @@ export class AuthService {
 
     // Signing in changes the auth client's session. Keep this trusted profile
     // lookup on a separate service-role client, as in SupabaseAuthGuard.
-    const { data: users, error: userError } = await this.supabaseService.getAdminClient()
+    const { data: users, error: userError } = await this.supabaseService
+      .getAdminClient()
       .from('users')
       .select('role')
       .eq('id', authData.user.id);
@@ -179,7 +201,8 @@ export class AuthService {
     const supabase = this.supabaseService.getAdminClient();
 
     // 1. Fetch user's email to verify current password via signIn
-    const { data: user, error: userError } = await supabase.auth.admin.getUserById(userId);
+    const { data: user, error: userError } =
+      await supabase.auth.admin.getUserById(userId);
     if (userError || !user.user?.email) {
       throw new InternalServerErrorException('User not found.');
     }
@@ -197,7 +220,7 @@ export class AuthService {
     // 3. Update to new password
     const { error: updateError } = await supabase.auth.admin.updateUserById(
       userId,
-      { password: dto.newPassword }
+      { password: dto.newPassword },
     );
 
     if (updateError) {

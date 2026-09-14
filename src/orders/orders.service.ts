@@ -21,7 +21,7 @@ export class OrdersService {
   async cleanupExpiredOrders() {
     const supabase = this.supabaseService.getAdminClient();
     const expiryTime = new Date(Date.now() - 15 * 60000).toISOString();
-    
+
     const { data: draftData, error: draftError } = await supabase
       .from('orders')
       .delete()
@@ -30,7 +30,9 @@ export class OrdersService {
       .select('id');
 
     if (draftError) {
-      this.logger.error('Failed to cleanup expired drafts: ' + draftError.message);
+      this.logger.error(
+        'Failed to cleanup expired drafts: ' + draftError.message,
+      );
     } else if (draftData && draftData.length > 0) {
       this.logger.log(`Cleaned up ${draftData.length} expired drafts.`);
     }
@@ -45,13 +47,21 @@ export class OrdersService {
       .select('id');
 
     if (expiredError) {
-      this.logger.error('Failed to expire rejected orders: ' + expiredError.message);
+      this.logger.error(
+        'Failed to expire rejected orders: ' + expiredError.message,
+      );
     } else if (expiredOrders && expiredOrders.length > 0) {
       this.logger.log(`Expired ${expiredOrders.length} rejected orders.`);
     }
   }
 
-  async getUserOrders(userId: string, sortByDate: 'asc' | 'desc' = 'desc', status?: string, page: number = 1, limit: number = 10) {
+  async getUserOrders(
+    userId: string,
+    sortByDate: 'asc' | 'desc' = 'desc',
+    status?: string,
+    page: number = 1,
+    limit: number = 10,
+  ) {
     const supabase = this.supabaseService.getAdminClient();
     let query = supabase
       .from('orders')
@@ -71,7 +81,9 @@ export class OrdersService {
     const { data, error, count } = await query;
 
     if (error) {
-      throw new InternalServerErrorException('Failed to fetch orders: ' + error.message);
+      throw new InternalServerErrorException(
+        'Failed to fetch orders: ' + error.message,
+      );
     }
 
     const totalItems = count || 0;
@@ -82,8 +94,8 @@ export class OrdersService {
       meta: {
         currentPage: page,
         totalPages,
-        totalItems
-      }
+        totalItems,
+      },
     };
   }
 
@@ -96,7 +108,9 @@ export class OrdersService {
       .order('created_at', { ascending: false });
 
     if (error) {
-      throw new InternalServerErrorException('Failed to fetch shop orders: ' + error.message);
+      throw new InternalServerErrorException(
+        'Failed to fetch shop orders: ' + error.message,
+      );
     }
     return data;
   }
@@ -118,63 +132,78 @@ export class OrdersService {
 
   async getDrafts(userId: string, page: number = 1, limit: number = 10) {
     const supabase = this.supabaseService.getAdminClient();
-    
+
     const from = (page - 1) * limit;
     const to = from + limit - 1;
 
     // Ensure shop_id and assets(file_url) are included in the select query
     const { data, error, count } = await supabase
       .from('orders')
-      .select('id, total, created_at, shop_id, shops(name), assets(file_url), paper_size, print_color_mode, page_count', { count: 'exact' })
+      .select(
+        'id, total, created_at, shop_id, shops(name), assets(file_url), paper_size, print_color_mode, page_count',
+        { count: 'exact' },
+      )
       .eq('client_id', userId)
-      .eq('state', 'DRAFT') 
+      .eq('state', 'DRAFT')
       .order('created_at', { ascending: false })
       .range(from, to);
 
     if (error) {
-      throw new InternalServerErrorException('Failed to fetch drafts: ' + error.message);
+      throw new InternalServerErrorException(
+        'Failed to fetch drafts: ' + error.message,
+      );
     }
 
     const mappedData = data.map((order: any) => {
       let fileUrl = '';
       let fileName = 'Design File';
-      
+
       if (order.assets && order.assets.length > 0 && order.assets[0].file_url) {
         fileUrl = order.assets[0].file_url;
         const urlParts = fileUrl.split('/');
-        let rawName = decodeURIComponent(urlParts[urlParts.length - 1]);
+        const rawName = decodeURIComponent(urlParts[urlParts.length - 1]);
         const match = rawName.match(/-\d{13}-(.+)$/);
         fileName = match ? match[1] : rawName;
       }
 
       return {
         id: order.id,
-        shopId: order.shop_id, 
+        shopId: order.shop_id,
         shopName: order.shops?.name || 'Unknown Shop',
         fileName: fileName,
-        fileUrl: fileUrl,      
+        fileUrl: fileUrl,
         total: order.total,
         updatedAt: order.created_at,
         paperSize: order.paper_size,
         printColorMode: order.print_color_mode,
-        pageCount: order.page_count
+        pageCount: order.page_count,
       };
     });
-    
+
     const totalItems = count || 0;
     const totalPages = Math.max(1, Math.ceil(totalItems / limit));
-    
+
     return {
       data: mappedData,
       meta: {
         currentPage: page,
         totalPages,
-        totalItems
-      }
+        totalItems,
+      },
     };
   }
 
-  async updateDraft(userId: string, draftId: string, payload: { shopId: string; paperSize: string; printColorMode: string; total: number; pageCount: number }) {
+  async updateDraft(
+    userId: string,
+    draftId: string,
+    payload: {
+      shopId: string;
+      paperSize: string;
+      printColorMode: string;
+      total: number;
+      pageCount: number;
+    },
+  ) {
     const supabase = this.supabaseService.getAdminClient();
 
     const { data: order, error: fetchError } = await supabase
@@ -195,12 +224,14 @@ export class OrdersService {
         paper_size: payload.paperSize,
         print_color_mode: payload.printColorMode,
         total: payload.total,
-        page_count: payload.pageCount
+        page_count: payload.pageCount,
       })
       .eq('id', draftId);
 
     if (updateError) {
-      throw new InternalServerErrorException('Failed to update draft: ' + updateError.message);
+      throw new InternalServerErrorException(
+        'Failed to update draft: ' + updateError.message,
+      );
     }
 
     return { message: 'Draft updated successfully' };
@@ -226,14 +257,16 @@ export class OrdersService {
 
     const { error: updateError } = await supabase
       .from('orders')
-      .update({ 
+      .update({
         state: 'OPEN_INQUIRY',
-        created_at: new Date().toISOString() // This resets the 15-minute clock!
+        created_at: new Date().toISOString(), // This resets the 15-minute clock!
       })
       .eq('id', draftId);
 
     if (updateError) {
-      throw new InternalServerErrorException('Failed to submit draft: ' + updateError.message);
+      throw new InternalServerErrorException(
+        'Failed to submit draft: ' + updateError.message,
+      );
     }
 
     return { message: 'Draft submitted successfully', orderId: draftId };
@@ -250,15 +283,21 @@ export class OrdersService {
       .eq('state', 'DRAFT'); // Ensure only drafts can be deleted via this method
 
     if (deleteError) {
-      throw new InternalServerErrorException('Failed to delete draft: ' + deleteError.message);
+      throw new InternalServerErrorException(
+        'Failed to delete draft: ' + deleteError.message,
+      );
     }
 
     return { message: 'Draft deleted successfully' };
   }
 
-  async createOrder(userId: string, payload: CreateOrderDto, file: Express.Multer.File) {
+  async createOrder(
+    userId: string,
+    payload: CreateOrderDto,
+    file: Express.Multer.File,
+  ) {
     const supabase = this.supabaseService.getAdminClient();
-    
+
     // Evaluate the string sent by FormData
     const isDraftOrder = payload.isDraft === 'true';
     const initialState = isDraftOrder ? 'DRAFT' : 'OPEN_INQUIRY';
@@ -275,8 +314,8 @@ export class OrdersService {
     }
 
     const pricingMatrix = shop.pricing_matrix || {
-      paper_sizes: { "SHORT": 2.00, "A4": 3.00, "LONG": 4.00 },
-      color_mode_multipliers: { "BLACK_AND_WHITE": 0.00, "COLOR": 3.00 }
+      paper_sizes: { SHORT: 2.0, A4: 3.0, LONG: 4.0 },
+      color_mode_multipliers: { BLACK_AND_WHITE: 0.0, COLOR: 3.0 },
     };
 
     let pageCount = 1;
@@ -285,12 +324,16 @@ export class OrdersService {
         const pdfDoc = await PDFDocument.load(file.buffer);
         pageCount = pdfDoc.getPageCount();
       } catch (e) {
-        console.warn('Failed to parse PDF on backend, defaulting to 1 page:', e);
+        console.warn(
+          'Failed to parse PDF on backend, defaulting to 1 page:',
+          e,
+        );
       }
     }
 
-    const basePrice = pricingMatrix.paper_sizes[payload.paperSize] || 3.00;
-    const colorAdditive = pricingMatrix.color_mode_multipliers[payload.printColorMode] || 0.00;
+    const basePrice = pricingMatrix.paper_sizes[payload.paperSize] || 3.0;
+    const colorAdditive =
+      pricingMatrix.color_mode_multipliers[payload.printColorMode] || 0.0;
     const calculatedTotal = (basePrice + colorAdditive) * pageCount;
 
     // 1. Create the base order ledger entry
@@ -299,13 +342,13 @@ export class OrdersService {
       .from('orders')
       .insert({
         client_id: userId,
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+
         shop_id: payload.shopId,
         state: initialState,
         total: calculatedTotal,
         print_color_mode: payload.printColorMode,
         paper_size: payload.paperSize,
-        page_count: pageCount
+        page_count: pageCount,
       })
       .select()
       .single();
@@ -319,19 +362,19 @@ export class OrdersService {
     // 2. Upload the raw design asset to the 'assets' bucket
     await this.ensureAssetsBucket();
     const fileName = `${userId}-${order.id}-${Date.now()}-${file.originalname}`;
-    const { data: uploadData, error: uploadError } = await supabase
-      .storage
+    const { data: uploadData, error: uploadError } = await supabase.storage
       .from('assets')
       .upload(fileName, file.buffer, {
         contentType: file.mimetype,
       });
 
     if (uploadError) {
-      throw new InternalServerErrorException(`Failed to upload asset: ${uploadError.message}`);
+      throw new InternalServerErrorException(
+        `Failed to upload asset: ${uploadError.message}`,
+      );
     }
 
-    const { data: urlData } = supabase
-      .storage
+    const { data: urlData } = supabase.storage
       .from('assets')
       .getPublicUrl(fileName);
 
@@ -341,7 +384,7 @@ export class OrdersService {
     const { error: assetError } = await supabase.from('assets').insert({
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       order_id: order.id,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+
       file_url: publicUrl,
       dpi: 300, // Baseline required by application logic
       file_type: file.mimetype.startsWith('image/') ? 'IMAGE' : 'PDF',
@@ -365,27 +408,45 @@ export class OrdersService {
 
   async ensureReceiptsBucket() {
     const supabase = this.supabaseService.getAdminClient();
-    const { data: buckets, error: listError } = await supabase.storage.listBuckets();
+    const { data: buckets, error: listError } =
+      await supabase.storage.listBuckets();
     if (listError) {
-      this.logger.error("Error listing buckets:", listError);
-      throw new InternalServerErrorException(`Failed to list buckets: ${listError.message}`);
+      this.logger.error('Error listing buckets:', listError);
+      throw new InternalServerErrorException(
+        `Failed to list buckets: ${listError.message}`,
+      );
     }
-    if (!buckets?.find(b => b.name === 'receipts')) {
-      const { error: createError } = await supabase.storage.createBucket('receipts', { public: true });
-      if (createError) throw new InternalServerErrorException(`Failed to create receipts bucket: ${createError.message}`);
+    if (!buckets?.find((b) => b.name === 'receipts')) {
+      const { error: createError } = await supabase.storage.createBucket(
+        'receipts',
+        { public: true },
+      );
+      if (createError)
+        throw new InternalServerErrorException(
+          `Failed to create receipts bucket: ${createError.message}`,
+        );
     }
   }
 
   async ensureAssetsBucket() {
     const supabase = this.supabaseService.getAdminClient();
-    const { data: buckets, error: listError } = await supabase.storage.listBuckets();
+    const { data: buckets, error: listError } =
+      await supabase.storage.listBuckets();
     if (listError) {
-      this.logger.error("Error listing buckets:", listError);
-      throw new InternalServerErrorException(`Failed to list buckets: ${listError.message}`);
+      this.logger.error('Error listing buckets:', listError);
+      throw new InternalServerErrorException(
+        `Failed to list buckets: ${listError.message}`,
+      );
     }
-    if (!buckets?.find(b => b.name === 'assets')) {
-      const { error: createError } = await supabase.storage.createBucket('assets', { public: true });
-      if (createError) throw new InternalServerErrorException(`Failed to create assets bucket: ${createError.message}`);
+    if (!buckets?.find((b) => b.name === 'assets')) {
+      const { error: createError } = await supabase.storage.createBucket(
+        'assets',
+        { public: true },
+      );
+      if (createError)
+        throw new InternalServerErrorException(
+          `Failed to create assets bucket: ${createError.message}`,
+        );
     }
   }
 
@@ -393,7 +454,7 @@ export class OrdersService {
     userId: string,
     orderId: string,
     file: Express.Multer.File,
-    referenceNumber?: string
+    referenceNumber?: string,
   ) {
     const supabase = this.supabaseService.getAdminClient();
 
@@ -405,37 +466,55 @@ export class OrdersService {
       .single();
 
     if (fetchError || !order) {
-      throw new NotFoundException('Order not found or you do not have permission to access it.');
+      throw new NotFoundException(
+        'Order not found or you do not have permission to access it.',
+      );
     }
 
-    if (order.state !== 'PROOF_APPROVED' && order.state !== 'AWAITING_PAYMENT' && order.state !== 'OPEN_INQUIRY') {
-      throw new BadRequestException(`Cannot upload receipt for an order in ${order.state} state.`);
+    if (
+      order.state !== 'PROOF_APPROVED' &&
+      order.state !== 'AWAITING_PAYMENT' &&
+      order.state !== 'OPEN_INQUIRY'
+    ) {
+      throw new BadRequestException(
+        `Cannot upload receipt for an order in ${order.state} state.`,
+      );
     }
 
     // Assume bucket exists. User should create it in Supabase Dashboard.
 
     const fileName = `${orderId}-${Date.now()}-${file.originalname}`;
-    const { error: uploadError } = await supabase.storage.from('receipts').upload(fileName, file.buffer, {
-      contentType: file.mimetype,
-    });
+    const { error: uploadError } = await supabase.storage
+      .from('receipts')
+      .upload(fileName, file.buffer, {
+        contentType: file.mimetype,
+      });
 
     if (uploadError) {
-      throw new InternalServerErrorException(`Failed to upload receipt image: ${uploadError.message}`);
+      throw new InternalServerErrorException(
+        `Failed to upload receipt image: ${uploadError.message}`,
+      );
     }
 
-    const { data: urlData } = supabase.storage.from('receipts').getPublicUrl(fileName);
+    const { data: urlData } = supabase.storage
+      .from('receipts')
+      .getPublicUrl(fileName);
     const receiptUrl = urlData.publicUrl;
 
-    const { error: receiptError } = await supabase.from('payment_receipts').insert({
-      order_id: orderId,
-      uploaded_by: userId,
-      receipt_url: receiptUrl,
-      reference_number: referenceNumber || null,
-      verified: false,
-    });
+    const { error: receiptError } = await supabase
+      .from('payment_receipts')
+      .insert({
+        order_id: orderId,
+        uploaded_by: userId,
+        receipt_url: receiptUrl,
+        reference_number: referenceNumber || null,
+        verified: false,
+      });
 
     if (receiptError) {
-      throw new InternalServerErrorException('Failed to upload receipt record: ' + receiptError.message);
+      throw new InternalServerErrorException(
+        'Failed to upload receipt record: ' + receiptError.message,
+      );
     }
 
     const { error: updateError } = await supabase
@@ -444,7 +523,9 @@ export class OrdersService {
       .eq('id', orderId);
 
     if (updateError) {
-      throw new InternalServerErrorException('Receipt uploaded, but failed to update order state.');
+      throw new InternalServerErrorException(
+        'Receipt uploaded, but failed to update order state.',
+      );
     }
 
     // Assign notification to the shop ID (clerk_id)
@@ -475,26 +556,35 @@ export class OrdersService {
 
     // Can only dispute if previously rejected and awaiting payment
     if (order.state !== 'AWAITING_PAYMENT') {
-      throw new BadRequestException('Order is not in a state that can be disputed.');
+      throw new BadRequestException(
+        'Order is not in a state that can be disputed.',
+      );
     }
 
     const { error: updateError } = await supabase
       .from('orders')
-      .update({ 
+      .update({
         state: 'ESCALATED_DISPUTE',
         dispute_reason: reason,
-        expires_at: null // Clear expiration timer during dispute
+        expires_at: null, // Clear expiration timer during dispute
       })
       .eq('id', orderId);
 
     if (updateError) {
-      throw new InternalServerErrorException('Failed to escalate dispute: ' + updateError.message);
+      throw new InternalServerErrorException(
+        'Failed to escalate dispute: ' + updateError.message,
+      );
     }
 
     return { message: 'Payment dispute escalated successfully.' };
   }
 
-  async verifyPayment(clerkId: string, orderId: string, action: 'APPROVE' | 'REJECT', reason?: string) {
+  async verifyPayment(
+    clerkId: string,
+    orderId: string,
+    action: 'APPROVE' | 'REJECT',
+    reason?: string,
+  ) {
     const supabase = this.supabaseService.getAdminClient();
 
     // In a real app we might verify if clerkId belongs to the shop that owns the order
@@ -509,45 +599,58 @@ export class OrdersService {
     }
 
     if (order.state !== 'AWAITING_PAYMENT_VERIFICATION') {
-      throw new BadRequestException('Order is not awaiting payment verification.');
+      throw new BadRequestException(
+        'Order is not awaiting payment verification.',
+      );
     }
 
     if (action === 'APPROVE') {
-      await supabase.from('payment_receipts')
+      await supabase
+        .from('payment_receipts')
         .update({ verified: true })
         .eq('order_id', orderId);
 
-      const { error: updateError } = await supabase.from('orders')
+      const { error: updateError } = await supabase
+        .from('orders')
         .update({ state: 'IN_PRODUCTION' })
         .eq('id', orderId);
 
-      if (updateError) throw new InternalServerErrorException('Failed to update order state.');
-      
+      if (updateError)
+        throw new InternalServerErrorException('Failed to update order state.');
+
       // Clear notifications
-      await supabase.from('notifications')
+      await supabase
+        .from('notifications')
         .update({ is_read: true })
         .eq('order_id', orderId);
 
       return { message: 'Payment approved. Order is now in production.' };
     } else {
       // REJECT
-      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-      const { error: updateError } = await supabase.from('orders')
-        .update({ 
+      const expiresAt = new Date(
+        Date.now() + 24 * 60 * 60 * 1000,
+      ).toISOString();
+      const { error: updateError } = await supabase
+        .from('orders')
+        .update({
           state: 'AWAITING_PAYMENT',
           shop_rejection_reason: reason || null,
-          expires_at: expiresAt
+          expires_at: expiresAt,
         })
         .eq('id', orderId);
 
-      if (updateError) throw new InternalServerErrorException('Failed to update order state.');
+      if (updateError)
+        throw new InternalServerErrorException('Failed to update order state.');
 
       // Clear notifications
-      await supabase.from('notifications')
+      await supabase
+        .from('notifications')
         .update({ is_read: true })
         .eq('order_id', orderId);
-        
-      return { message: 'Payment rejected. Client has been notified to re-upload.' };
+
+      return {
+        message: 'Payment rejected. Client has been notified to re-upload.',
+      };
     }
   }
 
@@ -600,7 +703,9 @@ export class OrdersService {
       .eq('id', orderId);
 
     if (updateError) {
-      throw new InternalServerErrorException('Failed to update order state: ' + updateError.message);
+      throw new InternalServerErrorException(
+        'Failed to update order state: ' + updateError.message,
+      );
     }
 
     return { message: 'Order state updated successfully', state: newState };

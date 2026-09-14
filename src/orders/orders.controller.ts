@@ -1,4 +1,18 @@
-import { Controller, Get, Post, Delete, Patch, Body, Param, Req, UseGuards, UseInterceptors, UploadedFile, BadRequestException, Query } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Delete,
+  Patch,
+  Body,
+  Param,
+  Req,
+  UseGuards,
+  UseInterceptors,
+  UploadedFile,
+  BadRequestException,
+  Query,
+} from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -23,7 +37,13 @@ export class OrdersController {
     @Query('limit') limit: string = '10',
   ) {
     const userId = (req as any).user.id;
-    return this.ordersService.getUserOrders(userId, sortByDate, status, parseInt(page, 10), parseInt(limit, 10));
+    return this.ordersService.getUserOrders(
+      userId,
+      sortByDate,
+      status,
+      parseInt(page, 10),
+      parseInt(limit, 10),
+    );
   }
 
   @Get('shop')
@@ -41,7 +61,11 @@ export class OrdersController {
     @Query('limit') limit: string = '10',
   ) {
     const userId = (req as any).user.id;
-    return this.ordersService.getDrafts(userId, parseInt(page, 10), parseInt(limit, 10));
+    return this.ordersService.getDrafts(
+      userId,
+      parseInt(page, 10),
+      parseInt(limit, 10),
+    );
   }
 
   @Get(':id')
@@ -70,10 +94,7 @@ export class OrdersController {
 
   @Patch(':id/submit')
   @Roles('STUDENT')
-  async submitDraft(
-    @Param('id') draftId: string,
-    @Req() req: Request,
-  ) {
+  async submitDraft(@Param('id') draftId: string, @Req() req: Request) {
     const userId = (req as any).user.id;
     return this.ordersService.submitDraft(userId, draftId);
   }
@@ -82,7 +103,14 @@ export class OrdersController {
   @Roles('STUDENT')
   async updateDraft(
     @Param('id') draftId: string,
-    @Body() body: { shopId: string; paperSize: string; printColorMode: string; total: number; pageCount: number },
+    @Body()
+    body: {
+      shopId: string;
+      paperSize: string;
+      printColorMode: string;
+      total: number;
+      pageCount: number;
+    },
     @Req() req: Request,
   ) {
     const userId = (req as any).user.id;
@@ -91,10 +119,7 @@ export class OrdersController {
 
   @Delete(':id/draft')
   @Roles('STUDENT')
-  async deleteDraft(
-    @Param('id') draftId: string,
-    @Req() req: Request,
-  ) {
+  async deleteDraft(@Param('id') draftId: string, @Req() req: Request) {
     const userId = (req as any).user.id;
     return this.ordersService.deleteDraft(userId, draftId);
   }
@@ -112,26 +137,33 @@ export class OrdersController {
       throw new BadRequestException('Receipt image is required');
     }
     const userId = (req as any).user.id;
-    return this.ordersService.submitPaymentReceipt(userId, orderId, receiptFile, referenceNumber);
+    return this.ordersService.submitPaymentReceipt(
+      userId,
+      orderId,
+      receiptFile,
+      referenceNumber,
+    );
   }
 
   @Post(':id/verify-payment')
   @Roles('CLERK', 'MANAGER')
   async verifyPayment(
     @Param('id') orderId: string,
-    @Body() body: { action: 'APPROVE' | 'REJECT', reason?: string },
+    @Body() body: { action: 'APPROVE' | 'REJECT'; reason?: string },
     @Req() req: Request,
   ) {
     const clerkId = (req as any).user.id;
-    return this.ordersService.verifyPayment(clerkId, orderId, body.action, body.reason);
+    return this.ordersService.verifyPayment(
+      clerkId,
+      orderId,
+      body.action,
+      body.reason,
+    );
   }
 
   @Delete(':id')
   @Roles('STUDENT')
-  async cancelOrder(
-    @Param('id') orderId: string,
-    @Req() req: Request,
-  ) {
+  async cancelOrder(@Param('id') orderId: string, @Req() req: Request) {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment,@typescript-eslint/no-unsafe-member-access
     const userId = (req as any).user.id;
     return this.ordersService.cancelOrder(userId, orderId);
@@ -145,7 +177,9 @@ export class OrdersController {
     @Req() req: Request,
   ) {
     if (!reason || reason.trim().length === 0) {
-      throw new BadRequestException('A reason must be provided for the dispute.');
+      throw new BadRequestException(
+        'A reason must be provided for the dispute.',
+      );
     }
     const userId = (req as any).user.id;
     return this.ordersService.disputePayment(userId, orderId, reason);

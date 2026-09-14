@@ -40,7 +40,7 @@ export class SupabaseService {
           autoRefreshToken: false,
           persistSession: false,
         },
-      }
+      },
     );
   }
 }

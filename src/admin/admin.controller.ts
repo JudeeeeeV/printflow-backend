@@ -1,4 +1,12 @@
-import { Controller, Post, Body, Get, Param, UseGuards, Req } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  Get,
+  Param,
+  UseGuards,
+  Req,
+} from '@nestjs/common';
 import { AdminService } from './admin.service';
 import { AdminAuthGuard } from '../iam/guards/admin-auth.guard';
 
@@ -33,7 +41,7 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   async verifyShop(
     @Param('id') shopId: string,
-    @Body() body: { status: 'VERIFIED' | 'REJECTED'; reason?: string }
+    @Body() body: { status: 'VERIFIED' | 'REJECTED'; reason?: string },
   ) {
     return this.adminService.verifyShop(shopId, body.status, body.reason);
   }

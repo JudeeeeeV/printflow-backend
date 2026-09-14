@@ -4,6 +4,6 @@ import { IamService } from './iam.service';
 
 @Module({
   controllers: [IamController],
-  providers: [IamService]
+  providers: [IamService],
 })
 export class IamModule {}

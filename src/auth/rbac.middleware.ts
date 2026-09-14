@@ -1,5 +1,10 @@
 // src/auth/rbac.middleware.ts
-import { Injectable, NestMiddleware, ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  NestMiddleware,
+  ForbiddenException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
 import { JWTService } from './jwt.service';
 
@@ -41,7 +46,7 @@ export class RBACMiddleware implements NestMiddleware {
   }
 
   private checkPermissions(path: string, role: string): boolean {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment,@typescript-eslint/ban-ts-comment
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
     // @ts-expect-error
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const allowedRoles = PermissionsMatrix[path] || [];

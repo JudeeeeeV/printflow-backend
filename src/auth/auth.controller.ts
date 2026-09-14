@@ -2,7 +2,10 @@ import { Controller, Post, Body, UseGuards, Request } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
-import { SendPasswordResetDto, ResetPasswordDto } from './dto/password-reset.dto';
+import {
+  SendPasswordResetDto,
+  ResetPasswordDto,
+} from './dto/password-reset.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { SupabaseAuthGuard } from '../iam/guards/supabase-auth.guard';
 

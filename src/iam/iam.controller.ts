@@ -7,13 +7,13 @@ import type { Request } from 'express';
 @Controller('iam')
 @UseGuards(SupabaseAuthGuard, RolesGuard)
 export class IamController {
-  
   @Get('clerk-dashboard')
   @Roles('CLERK', 'MANAGER')
   getClerkData(@Req() req: Request) {
     // Explicit type casting to any to access custom user property safely
-    return { message: 'Welcome to the Clerk Dashboard', user: (req as any).user };
+    return {
+      message: 'Welcome to the Clerk Dashboard',
+      user: (req as any).user,
+    };
   }
 }
-
-

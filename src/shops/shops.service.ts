@@ -13,7 +13,8 @@ export class ShopsService {
   }
 
   async getVerifiedShops() {
-    const { data, error } = await this.supabaseService.getAdminClient()
+    const { data, error } = await this.supabaseService
+      .getAdminClient()
       .from('shops')
       .select('*')
       .eq('status', 'OPEN')
@@ -26,7 +27,8 @@ export class ShopsService {
   }
 
   async getShopById(shopId: string) {
-    const { data, error } = await this.supabaseService.getAdminClient()
+    const { data, error } = await this.supabaseService
+      .getAdminClient()
       .from('shops')
       .select('*')
       .eq('id', shopId)
@@ -38,10 +40,13 @@ export class ShopsService {
     return data;
   }
 
-  async updateShop(shopId: string, updateData: { name?: string, location?: string, description?: string }) {
+  async updateShop(
+    shopId: string,
+    updateData: { name?: string; location?: string; description?: string },
+  ) {
     const supabase = this.supabaseService.getAdminClient();
-    
-    // Map frontend fields to DB fields if needed, currently DB has 'name'. 
+
+    // Map frontend fields to DB fields if needed, currently DB has 'name'.
     // We'll update what's provided. Assuming 'location' or 'description' exist, if not, Supabase ignores or throws.
     // Let's check what fields exist or just pass them in.
     const payload: any = {};
@@ -58,7 +63,9 @@ export class ShopsService {
       .single();
 
     if (error) {
-      throw new InternalServerErrorException(`Failed to update shop: ${error.message}`);
+      throw new InternalServerErrorException(
+        `Failed to update shop: ${error.message}`,
+      );
     }
 
     return data;
@@ -66,41 +73,57 @@ export class ShopsService {
 
   async ensurePermitsBucket() {
     const supabase = this.supabaseService.getAdminClient();
-    const { data: buckets, error: listError } = await supabase.storage.listBuckets();
-    
+    const { data: buckets, error: listError } =
+      await supabase.storage.listBuckets();
+
     if (listError) {
-      console.error("Error listing buckets:", listError);
-      throw new InternalServerErrorException(`Failed to list buckets: ${listError.message}`);
+      console.error('Error listing buckets:', listError);
+      throw new InternalServerErrorException(
+        `Failed to list buckets: ${listError.message}`,
+      );
     }
 
-    if (!buckets?.find(b => b.name === 'permits')) {
+    if (!buckets?.find((b) => b.name === 'permits')) {
       console.log("Bucket 'permits' not found, creating it...");
-      const { data, error: createError } = await supabase.storage.createBucket('permits', { public: true });
+      const { data, error: createError } = await supabase.storage.createBucket(
+        'permits',
+        { public: true },
+      );
       if (createError) {
-        console.error("Error creating bucket:", createError);
-        throw new InternalServerErrorException(`Failed to create permits bucket: ${createError.message}`);
+        console.error('Error creating bucket:', createError);
+        throw new InternalServerErrorException(
+          `Failed to create permits bucket: ${createError.message}`,
+        );
       }
-      console.log("Bucket created successfully:", data);
+      console.log('Bucket created successfully:', data);
     }
   }
 
   async ensureGcashQrsBucket() {
     const supabase = this.supabaseService.getAdminClient();
-    const { data: buckets, error: listError } = await supabase.storage.listBuckets();
-    
+    const { data: buckets, error: listError } =
+      await supabase.storage.listBuckets();
+
     if (listError) {
-      console.error("Error listing buckets:", listError);
-      throw new InternalServerErrorException(`Failed to list buckets: ${listError.message}`);
+      console.error('Error listing buckets:', listError);
+      throw new InternalServerErrorException(
+        `Failed to list buckets: ${listError.message}`,
+      );
     }
 
-    if (!buckets?.find(b => b.name === 'gcash_qrs')) {
+    if (!buckets?.find((b) => b.name === 'gcash_qrs')) {
       console.log("Bucket 'gcash_qrs' not found, creating it...");
-      const { data, error: createError } = await supabase.storage.createBucket('gcash_qrs', { public: true });
+      const { data, error: createError } = await supabase.storage.createBucket(
+        'gcash_qrs',
+        { public: true },
+      );
       if (createError) {
-        console.error("Error creating bucket:", createError);
-        throw new InternalServerErrorException(`Failed to create gcash_qrs bucket: ${createError.message}`);
+        console.error('Error creating bucket:', createError);
+        throw new InternalServerErrorException(
+          `Failed to create gcash_qrs bucket: ${createError.message}`,
+        );
       }
-      console.log("Bucket gcash_qrs created successfully:", data);
+      console.log('Bucket gcash_qrs created successfully:', data);
     }
   }
 
@@ -109,19 +132,19 @@ export class ShopsService {
     const supabase = this.supabaseService.getAdminClient();
 
     const fileName = `${shopId}-${Date.now()}-${file.originalname}`;
-    const { data: uploadData, error: uploadError } = await supabase
-      .storage
+    const { data: uploadData, error: uploadError } = await supabase.storage
       .from('permits')
       .upload(fileName, file.buffer, {
         contentType: file.mimetype,
       });
 
     if (uploadError) {
-      throw new InternalServerErrorException(`Failed to upload permit: ${uploadError.message}`);
+      throw new InternalServerErrorException(
+        `Failed to upload permit: ${uploadError.message}`,
+      );
     }
 
-    const { data: urlData } = supabase
-      .storage
+    const { data: urlData } = supabase.storage
       .from('permits')
       .getPublicUrl(fileName);
 
@@ -132,19 +155,20 @@ export class ShopsService {
 
     try {
       const response = await this.openai.chat.completions.create({
-        model: "gpt-4o",
-        response_format: { type: "json_object" },
+        model: 'gpt-4o',
+        response_format: { type: 'json_object' },
         messages: [
           {
-            role: "system",
-            content: "You are a compliance assistant evaluating business permits. Extract text, check dates, and verify the business name. Output JSON strictly matching this schema: { \"action\": \"ACCEPT\" | \"DENY\", \"reasoning\": \"Your reasoning here...\" }"
+            role: 'system',
+            content:
+              'You are a compliance assistant evaluating business permits. Extract text, check dates, and verify the business name. Output JSON strictly matching this schema: { "action": "ACCEPT" | "DENY", "reasoning": "Your reasoning here..." }',
           },
           {
-            role: "user",
+            role: 'user',
             content: [
-              { type: "text", text: "Please review this business permit." },
+              { type: 'text', text: 'Please review this business permit.' },
               {
-                type: "image_url",
+                type: 'image_url',
                 image_url: {
                   url: publicUrl,
                 },
@@ -159,12 +183,14 @@ export class ShopsService {
       if (responseContent) {
         const parsed = JSON.parse(responseContent);
         // Force uppercase and fallback to DENY if it doesn't explicitly say ACCEPT
-        const rawAction = String(parsed.action || '').toUpperCase().trim();
+        const rawAction = String(parsed.action || '')
+          .toUpperCase()
+          .trim();
         aiSuggestion = rawAction === 'ACCEPT' ? 'ACCEPT' : 'DENY';
         aiReasoning = parsed.reasoning || 'No reasoning provided.';
       }
     } catch (error: any) {
-      console.error("OpenAI Verification Error:", error);
+      console.error('OpenAI Verification Error:', error);
       aiSuggestion = 'DENY'; // Must be strictly ACCEPT or DENY
       aiReasoning = `Failed to process document automatically: ${error.message}. Please review manually.`;
     }
@@ -182,7 +208,9 @@ export class ShopsService {
       .single();
 
     if (updateError) {
-      throw new InternalServerErrorException(`Failed to update shop status: ${updateError.message}`);
+      throw new InternalServerErrorException(
+        `Failed to update shop status: ${updateError.message}`,
+      );
     }
 
     return updateData;
@@ -193,19 +221,19 @@ export class ShopsService {
     const supabase = this.supabaseService.getAdminClient();
 
     const fileName = `${shopId}-${Date.now()}-${file.originalname}`;
-    const { data: uploadData, error: uploadError } = await supabase
-      .storage
+    const { data: uploadData, error: uploadError } = await supabase.storage
       .from('gcash_qrs')
       .upload(fileName, file.buffer, {
         contentType: file.mimetype,
       });
 
     if (uploadError) {
-      throw new InternalServerErrorException(`Failed to upload GCash QR: ${uploadError.message}`);
+      throw new InternalServerErrorException(
+        `Failed to upload GCash QR: ${uploadError.message}`,
+      );
     }
 
-    const { data: urlData } = supabase
-      .storage
+    const { data: urlData } = supabase.storage
       .from('gcash_qrs')
       .getPublicUrl(fileName);
 
@@ -221,7 +249,9 @@ export class ShopsService {
       .single();
 
     if (updateError) {
-      throw new InternalServerErrorException(`Failed to update GCash QR URL: ${updateError.message}`);
+      throw new InternalServerErrorException(
+        `Failed to update GCash QR URL: ${updateError.message}`,
+      );
     }
 
     return updateData;

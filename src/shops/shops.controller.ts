@@ -1,4 +1,16 @@
-import { Controller, Get, Post, Patch, Body, Param, UseGuards, Req, BadRequestException, UseInterceptors, UploadedFile } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Body,
+  Param,
+  UseGuards,
+  Req,
+  BadRequestException,
+  UseInterceptors,
+  UploadedFile,
+} from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ShopsService } from './shops.service';
 import { SupabaseAuthGuard } from '../iam/guards/supabase-auth.guard';
@@ -26,7 +38,10 @@ export class ShopsController {
   @Patch('me')
   @UseGuards(SupabaseAuthGuard, RolesGuard)
   @Roles('CLERK', 'MANAGER')
-  async updateMyShop(@Req() req: Request, @Body() body: { name?: string, location?: string, description?: string }) {
+  async updateMyShop(
+    @Req() req: Request,
+    @Body() body: { name?: string; location?: string; description?: string },
+  ) {
     const userId = (req as any).user.id;
     return this.shopsService.updateShop(userId, body);
   }
@@ -42,7 +57,7 @@ export class ShopsController {
     if (!file) {
       throw new BadRequestException('Permit file is required');
     }
-    
+
     const userId = (req as any).user.id;
     return this.shopsService.verifyPermit(userId, file);
   }
@@ -58,7 +73,7 @@ export class ShopsController {
     if (!file) {
       throw new BadRequestException('QR Code file is required');
     }
-    
+
     const userId = (req as any).user.id;
     return this.shopsService.uploadGcashQr(userId, file);
   }

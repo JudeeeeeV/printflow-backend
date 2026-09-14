@@ -7,7 +7,9 @@ export class AssetUrlSigningService {
   constructor(private readonly configService: ConfigService) {}
 
   private get secretKey(): string {
-    return this.configService.get<string>('JWT_SECRET') || 'fallback_secret_key';
+    return (
+      this.configService.get<string>('JWT_SECRET') || 'fallback_secret_key'
+    );
   }
 
   /**
@@ -16,7 +18,7 @@ export class AssetUrlSigningService {
   signUrl(assetUrl: string, expiresInSeconds: number = 3600): string {
     const expiresAt = Math.floor(Date.now() / 1000) + expiresInSeconds;
     const dataToSign = `${assetUrl}:${expiresAt}`;
-    
+
     const signature = crypto
       .createHmac('sha256', this.secretKey)
       .update(dataToSign)

@@ -1,5 +1,5 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+
 import { JwtService as NestJwtService } from '@nestjs/jwt';
 
 export interface JwtPayload {
@@ -13,7 +13,6 @@ export class JWTService {
 
   verifyToken(token: string): JwtPayload {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-return
       return this.nestJwtService.verify<JwtPayload>(token);
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
     } catch (error) {
