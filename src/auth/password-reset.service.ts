@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { createHmac, randomInt, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { promises as dns } from 'node:dns';
 import { createTransport } from 'nodemailer';
 import { SupabaseService } from '../supabase/supabase.service';
 
@@ -53,13 +54,26 @@ export class PasswordResetService {
     if (wait > 0) {
       throw new HttpException(`Please wait ${wait} seconds before requesting another code.`, 429);
     }
+    // Force IPv4 lookup because Render drops outbound IPv6 causing ENETUNREACH
+    let ipv4Host = host;
+    try {
+      const lookupResult = await dns.lookup(host, { family: 4 });
+      ipv4Host = lookupResult.address;
+    } catch (err) {
+      this.logger.warn(`Could not resolve IPv4 for ${host}, falling back to default.`);
+    }
+
     const transport = createTransport({
-      host, port, secure: port === 465, requireTLS: port !== 465,
+      host: ipv4Host, 
+      port, 
+      secure: port === 465, 
+      requireTLS: port !== 465,
+      tls: {
+        servername: host, // Crucial for Google SMTP so it knows which certificate to present when we connect by IP
+      },
       auth: { user: username, pass: password },
       connectionTimeout: 10_000, greetingTimeout: 10_000, socketTimeout: 20_000,
       disableFileAccess: true, disableUrlAccess: true,
-      // Force IPv4 to fix ENETUNREACH on environments like Render that lack IPv6 outbound
-      family: 4,
     } as any);
     try {
       const result = await transport.sendMail({
