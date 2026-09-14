@@ -1,8 +1,10 @@
-import { Controller, Post, Body } from '@nestjs/common';
+import { Controller, Post, Body, UseGuards, Request } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { SendPasswordResetDto, ResetPasswordDto } from './dto/password-reset.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
+import { SupabaseAuthGuard } from '../iam/guards/supabase-auth.guard';
 
 import { ResendEmailOtpDto, VerifyEmailOtpDto } from './dto/email-otp.dto';
 
@@ -38,5 +40,11 @@ export class AuthController {
   @Post('forgot-password/reset')
   async resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto);
+  }
+
+  @UseGuards(SupabaseAuthGuard)
+  @Post('change-password')
+  async changePassword(@Request() req: any, @Body() dto: ChangePasswordDto) {
+    return this.authService.changePassword(req.user.id, dto);
   }
 }

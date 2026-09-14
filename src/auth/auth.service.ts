@@ -12,6 +12,7 @@ import { SignupVerificationService } from './signup-verification.service';
 import { PasswordResetService } from './password-reset.service';
 import { LoginDto } from './dto/login.dto';
 import { ResetPasswordDto } from './dto/password-reset.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 
 @Injectable()
 export class AuthService {
@@ -173,5 +174,36 @@ export class AuthService {
         roleTag: frontendRoleTag,
       },
     };
+  }
+  async changePassword(userId: string, dto: ChangePasswordDto) {
+    const supabase = this.supabaseService.getAdminClient();
+
+    // 1. Fetch user's email to verify current password via signIn
+    const { data: user, error: userError } = await supabase.auth.admin.getUserById(userId);
+    if (userError || !user.user?.email) {
+      throw new InternalServerErrorException('User not found.');
+    }
+
+    // 2. Verify current password
+    const { error: signInError } = await supabase.auth.signInWithPassword({
+      email: user.user.email,
+      password: dto.currentPassword,
+    });
+
+    if (signInError) {
+      throw new BadRequestException('Incorrect current password.');
+    }
+
+    // 3. Update to new password
+    const { error: updateError } = await supabase.auth.admin.updateUserById(
+      userId,
+      { password: dto.newPassword }
+    );
+
+    if (updateError) {
+      throw new InternalServerErrorException('Failed to update password.');
+    }
+
+    return { success: true, message: 'Password updated successfully.' };
   }
 }
