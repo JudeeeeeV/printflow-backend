@@ -69,7 +69,20 @@ export class AuthService {
       throw new BadRequestException('User not found.');
     }
 
-    // 3. Update the password
+    // 3. Prevent reusing the old password
+    const testClient = this.supabaseService.getAdminClient();
+    const { error: loginError } = await testClient.auth.signInWithPassword({
+      email,
+      password: dto.password,
+    });
+    
+    // If loginError is null, it means they just successfully signed in with the "new" password,
+    // which means it's literally their current password.
+    if (!loginError) {
+      throw new BadRequestException('Your new password cannot be the same as your old password.');
+    }
+
+    // 4. Update the password
     const { error: updateError } = await this.supabaseService
       .getAdminClient()
       .auth.admin.updateUserById(user.id, { password: dto.password });
@@ -205,6 +218,10 @@ export class AuthService {
       await supabase.auth.admin.getUserById(userId);
     if (userError || !user.user?.email) {
       throw new InternalServerErrorException('User not found.');
+    }
+
+    if (dto.currentPassword === dto.newPassword) {
+      throw new BadRequestException('Your new password cannot be the same as your old password.');
     }
 
     // 2. Verify current password

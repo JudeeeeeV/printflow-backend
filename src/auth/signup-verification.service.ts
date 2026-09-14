@@ -123,7 +123,7 @@ export class SignupVerificationService {
       });
       this.logger.error(`Signup Resend delivery failed: ${e.message}`, e.stack);
       throw new ServiceUnavailableException(
-        'We could not send your code. Please wait a minute and try again.',
+        `Resend Error: ${e.message}`,
       );
     }
   }
