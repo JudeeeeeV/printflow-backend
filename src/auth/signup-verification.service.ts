@@ -58,7 +58,9 @@ export class SignupVerificationService {
       auth: { user: username, pass: password },
       connectionTimeout: 10_000, greetingTimeout: 10_000, socketTimeout: 20_000,
       disableFileAccess: true, disableUrlAccess: true,
-    });
+      // Force IPv4 to fix ENETUNREACH on environments like Render that lack IPv6 outbound
+      family: 4,
+    } as any);
     try {
       const result = await transport.sendMail({
         from, to: email, subject: 'Your PrintFlow verification code', html,
