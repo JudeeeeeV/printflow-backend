@@ -96,30 +96,35 @@ export class SignupVerificationService {
         429,
       );
     }
-    const transport = createTransport({
-      service: 'gmail',
-      auth: { user: username, pass: password },
-    });
+    const resendKey = this.config.get<string>('RESEND_API_KEY');
+    if (!resendKey) {
+      this.logger.error('Configure RESEND_API_KEY in the backend environment.');
+      throw new ServiceUnavailableException('Verification email delivery is not configured yet. Please try again later.');
+    }
+
+    const { Resend } = await import('resend');
+    const resend = new Resend(resendKey);
+
     try {
-      const result = await transport.sendMail({
-        from,
+      const { error: resendError } = await resend.emails.send({
+        from: 'PrintFlow <onboarding@resend.dev>',
         to: email,
         subject: 'Your PrintFlow verification code',
         html,
         text: `Your PrintFlow verification code is ${code}. Enter it on the registration screen. It expires in 10 minutes and can be used once. If you did not request this code, ignore this email.`,
       });
-      if (!result.accepted?.length) throw new Error('Recipient not accepted');
+      if (resendError) {
+        throw new Error(resendError.message);
+      }
     } catch (e: any) {
       await client.rpc('invalidate_signup_code', {
         p_email: email,
         p_request_id: requestId,
       });
-      this.logger.error(`Signup SMTP delivery failed: ${e.message}`, e.stack);
+      this.logger.error(`Signup Resend delivery failed: ${e.message}`, e.stack);
       throw new ServiceUnavailableException(
         'We could not send your code. Please wait a minute and try again.',
       );
-    } finally {
-      transport.close();
     }
   }
 

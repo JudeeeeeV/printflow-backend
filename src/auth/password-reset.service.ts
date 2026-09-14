@@ -99,33 +99,39 @@ export class PasswordResetService {
         429,
       );
     }
-    const transport = createTransport({
-      service: 'gmail',
-      auth: { user: username, pass: password },
-    });
+    const resendKey = this.config.get<string>('RESEND_API_KEY');
+    if (!resendKey) {
+      this.logger.error('Configure RESEND_API_KEY in the backend environment.');
+      throw new ServiceUnavailableException('Verification email delivery is not configured yet. Please try again later.');
+    }
+    
+    // We import Resend dynamically or at the top. Let's use dynamic for simplicity here since it's just one method.
+    const { Resend } = await import('resend');
+    const resend = new Resend(resendKey);
+
     try {
-      const result = await transport.sendMail({
-        from,
-        to: email,
+      const { error: resendError } = await resend.emails.send({
+        from: 'PrintFlow <onboarding@resend.dev>', // Must use onboarding@resend.dev on free tier
+        to: email, // Free tier can only send to the verified email address
         subject: 'Reset your PrintFlow password',
         html,
         text: `Your PrintFlow password reset code is ${code}. Enter it on the reset password screen. It expires in 10 minutes and can be used once. If you did not request this code, ignore this email.`,
       });
-      if (!result.accepted?.length) throw new Error('Recipient not accepted');
+      if (resendError) {
+        throw new Error(resendError.message);
+      }
     } catch (e: any) {
       await client.rpc('invalidate_reset_code', {
         p_email: email,
         p_request_id: requestId,
       });
       this.logger.error(
-        `Password Reset SMTP delivery failed: ${e.message}`,
+        `Password Reset Resend delivery failed: ${e.message}`,
         e.stack,
       );
       throw new ServiceUnavailableException(
         'We could not send your code. Please wait a minute and try again.',
       );
-    } finally {
-      transport.close();
     }
   }
 
