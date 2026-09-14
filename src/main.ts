@@ -2,6 +2,10 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe, Logger } from '@nestjs/common';
+import dns from 'node:dns';
+
+// Force IPv4 globally for DNS resolution to prevent ENETUNREACH on platforms that lack IPv6 outbound
+dns.setDefaultResultOrder('ipv4first');
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
