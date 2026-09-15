@@ -1,4 +1,5 @@
 import {
+  ForbiddenException,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -13,6 +14,15 @@ export class AnalyticsService {
 
   async getShopAnalytics(shopId: string, startDate?: string, endDate?: string) {
     const supabase = this.supabaseService.getAdminClient();
+    const { data: shop, error: shopError } = await supabase
+      .from('shops')
+      .select('id')
+      .eq('id', shopId)
+      .eq('verification_status', 'VERIFIED')
+      .single();
+    if (shopError || !shop) {
+      throw new ForbiddenException('A verified shop account is required');
+    }
 
     // Query all non-draft orders for the shop with expanded fields
     let query = supabase

@@ -37,7 +37,7 @@ export class AdminService {
 
     // Temporary token to be used for 2FA verification/setup
     const tempToken = this.jwtService.sign(
-      { sub: admin.id, email: admin.email, isTemp: true },
+      { sub: admin.id, email: admin.email, tokenType: 'admin-temp' },
       { expiresIn: '15m' },
     );
 
@@ -50,10 +50,13 @@ export class AdminService {
       const qrCodeUrl = await qrcode.toDataURL(otpauth!);
 
       // Save secret temporarily in DB
-      await supabase
+      const { error: secretError } = await supabase
         .from('admins')
         .update({ two_factor_secret: secret.base32 })
         .eq('id', admin.id);
+      if (secretError) {
+        throw new InternalServerErrorException('Failed to initialize 2FA');
+      }
 
       return {
         requires_setup: true,
@@ -92,16 +95,20 @@ export class AdminService {
     }
 
     // Enable 2FA
-    await supabase
+    const { error: enableError } = await supabase
       .from('admins')
       .update({ is_2fa_enabled: true })
       .eq('id', adminId);
+    if (enableError) {
+      throw new InternalServerErrorException('Failed to enable 2FA');
+    }
 
     // Issue full token
     const accessToken = this.jwtService.sign({
       sub: admin.id,
       email: admin.email,
       role: 'ADMIN',
+      tokenType: 'admin-access',
     });
     return { access_token: accessToken };
   }
@@ -133,11 +140,13 @@ export class AdminService {
       sub: admin.id,
       email: admin.email,
       role: 'ADMIN',
+      tokenType: 'admin-access',
     });
     return { access_token: accessToken };
   }
 
   async getPendingShops() {
+    await this.supabaseService.ensurePrivateBucket('permits');
     const supabase = this.supabaseService.getAdminClient();
     const { data, error } = await supabase
       .from('shops')
@@ -145,7 +154,16 @@ export class AdminService {
       .eq('verification_status', 'PENDING_REVIEW');
 
     if (error) throw new InternalServerErrorException(error.message);
-    return data;
+    return Promise.all(
+      (data || []).map(async (shop: any) => ({
+        ...shop,
+        business_permit_url: await this.supabaseService.createSignedStorageUrl(
+          'permits',
+          shop.business_permit_url,
+          300,
+        ),
+      })),
+    );
   }
 
   async verifyShop(
@@ -190,6 +208,7 @@ export class AdminService {
   }
 
   async getDisputes() {
+    await this.supabaseService.ensurePrivateBucket('receipts');
     const supabase = this.supabaseService.getAdminClient();
     const { data, error } = await supabase
       .from('orders')
@@ -198,36 +217,49 @@ export class AdminService {
       .order('created_at', { ascending: false });
 
     if (error) throw new InternalServerErrorException(error.message);
-    return data;
+    return Promise.all(
+      (data || []).map(async (order: any) => ({
+        ...order,
+        payment_receipts: await Promise.all(
+          (order.payment_receipts || []).map(async (receipt: any) => ({
+            ...receipt,
+            receipt_url: await this.supabaseService.createSignedStorageUrl(
+              'receipts',
+              receipt.receipt_url,
+              300,
+            ),
+          })),
+        ),
+      })),
+    );
   }
 
   async forceApproveOrder(orderId: string) {
     const supabase = this.supabaseService.getAdminClient();
 
-    // Set payment_receipts verified=true
+    const { data: order, error: orderError } = await supabase
+      .from('orders')
+      .update({
+        state: 'IN_PRODUCTION',
+        dispute_reason: null,
+      })
+      .eq('id', orderId)
+      .eq('state', 'ESCALATED_DISPUTE')
+      .select('id')
+      .maybeSingle();
+
+    if (orderError || !order)
+      throw new InternalServerErrorException(
+        'Order is not an active escalated dispute',
+      );
+
     const { error: receiptError } = await supabase
       .from('payment_receipts')
       .update({ verified: true })
       .eq('order_id', orderId);
 
     if (receiptError)
-      throw new InternalServerErrorException(
-        'Failed to verify receipt: ' + receiptError.message,
-      );
-
-    // Update order state
-    const { error: orderError } = await supabase
-      .from('orders')
-      .update({
-        state: 'IN_PRODUCTION',
-        dispute_reason: null,
-      })
-      .eq('id', orderId);
-
-    if (orderError)
-      throw new InternalServerErrorException(
-        'Failed to update order state: ' + orderError.message,
-      );
+      throw new InternalServerErrorException('Failed to verify receipt');
 
     return { message: 'Order force approved successfully.' };
   }
@@ -236,18 +268,21 @@ export class AdminService {
     const supabase = this.supabaseService.getAdminClient();
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
-    const { error: orderError } = await supabase
+    const { data: order, error: orderError } = await supabase
       .from('orders')
       .update({
         state: 'AWAITING_PAYMENT',
         dispute_reason: null,
         expires_at: expiresAt,
       })
-      .eq('id', orderId);
+      .eq('id', orderId)
+      .eq('state', 'ESCALATED_DISPUTE')
+      .select('id')
+      .maybeSingle();
 
-    if (orderError)
+    if (orderError || !order)
       throw new InternalServerErrorException(
-        'Failed to uphold rejection: ' + orderError.message,
+        'Order is not an active escalated dispute',
       );
 
     return { message: 'Rejection upheld. Expiration timer restarted.' };

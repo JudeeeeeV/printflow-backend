@@ -2,9 +2,13 @@ const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config({ path: './.env' });
 
 async function reset2FA() {
-  const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
-  
-  const email = 'jiezelmaelibres@gmail.com';
+  const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY,
+  );
+
+  const email = process.env.RESET_ADMIN_EMAIL;
+  if (!email) throw new Error('RESET_ADMIN_EMAIL is required');
 
   console.log('Resetting 2FA for:', email);
 

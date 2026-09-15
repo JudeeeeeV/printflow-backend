@@ -5,13 +5,35 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { Reflector } from '@nestjs/core';
+import { SupabaseService } from '../../supabase/supabase.service';
+import {
+  ADMIN_TOKEN_TYPE_KEY,
+  AdminTokenType,
+} from '../decorators/admin-token.decorator';
+import type { Request } from 'express';
+
+export interface AdminJwtPayload {
+  sub: string;
+  email: string;
+  role?: 'ADMIN';
+  tokenType: AdminTokenType;
+}
+
+interface AdminRequest extends Request {
+  user?: AdminJwtPayload;
+}
 
 @Injectable()
 export class AdminAuthGuard implements CanActivate {
-  constructor(private jwtService: JwtService) {}
+  constructor(
+    private readonly jwtService: JwtService,
+    private readonly reflector: Reflector,
+    private readonly supabaseService: SupabaseService,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest();
+    const request = context.switchToHttp().getRequest<AdminRequest>();
     const authHeader = request.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -23,31 +45,48 @@ export class AdminAuthGuard implements CanActivate {
     const token = authHeader.split(' ')[1];
 
     try {
-      const payload = await this.jwtService.verifyAsync(token, {
-        secret:
-          process.env.JWT_SECRET || 'super_secret_admin_key_2026_printflow',
-      });
+      const payload = await this.jwtService.verifyAsync<AdminJwtPayload>(
+        token,
+        {
+          algorithms: ['HS256'],
+          issuer: 'printflow-api',
+          audience: 'printflow-admin',
+        },
+      );
 
-      // We attach the user to the request object so our route handlers can use it.
-      // E.g., req.user.sub = admin_id
-      request['user'] = payload;
+      const requiredTokenType =
+        this.reflector.getAllAndOverride<AdminTokenType>(ADMIN_TOKEN_TYPE_KEY, [
+          context.getHandler(),
+          context.getClass(),
+        ]) || 'admin-access';
 
-      // If the route expects a FULL token (role = ADMIN), and they pass a TEMP token (isTemp = true),
-      // we should technically block them from non-auth routes.
-      // But for simplicity, we allow the setup-2fa and verify-2fa to use the temp token.
-      // Let's enforce that for /admin/shops and /admin/add, role MUST be ADMIN.
-      const path = request.url;
       if (
-        !path.includes('auth/setup-2fa') &&
-        !path.includes('auth/verify-2fa')
+        !payload.sub ||
+        payload.tokenType !== requiredTokenType ||
+        (requiredTokenType === 'admin-access' && payload.role !== 'ADMIN')
       ) {
-        if (payload.role !== 'ADMIN') {
-          throw new UnauthorizedException(
-            'Requires full 2FA authenticated token',
-          );
-        }
+        throw new UnauthorizedException('Invalid admin token type');
       }
-    } catch {
+
+      const { data: admin, error } = await this.supabaseService
+        .getAdminClient()
+        .from('admins')
+        .select('id, email, is_2fa_enabled')
+        .eq('id', payload.sub)
+        .single();
+
+      if (
+        error ||
+        !admin ||
+        admin.email !== payload.email ||
+        (requiredTokenType === 'admin-access' && !admin.is_2fa_enabled)
+      ) {
+        throw new UnauthorizedException('Admin account is not active');
+      }
+
+      request.user = payload;
+    } catch (error) {
+      if (error instanceof UnauthorizedException) throw error;
       throw new UnauthorizedException('Invalid token');
     }
 

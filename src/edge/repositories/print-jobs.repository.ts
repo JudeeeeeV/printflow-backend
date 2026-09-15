@@ -5,12 +5,22 @@ import { SupabaseService } from '../../supabase/supabase.service';
 export class PrintJobsRepository {
   constructor(private readonly supabaseService: SupabaseService) {}
 
-  async createJob(orderId: string, shopId: string): Promise<void> {
+  async claimJob(orderId: string, shopId: string): Promise<boolean> {
     const supabase = this.supabaseService.getAdminClient();
+    const staleBefore = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const { error: staleError } = await supabase
+      .from('print_jobs')
+      .update({ status: 'FAILED', updated_at: new Date().toISOString() })
+      .eq('order_id', orderId)
+      .eq('shop_id', shopId)
+      .in('status', ['QUEUED', 'DOWNLOADING', 'SENT_TO_SPOOLER'])
+      .lt('updated_at', staleBefore);
+    if (staleError) {
+      throw new InternalServerErrorException(
+        'Failed to inspect existing print job: ' + staleError.message,
+      );
+    }
 
-    // In a full DB schema, we would have a print_jobs table.
-    // Assuming the table might not exist yet, we try to insert. If it fails due to table not existing, we can log it.
-    // For now, we will update the order state directly or just create a mock if the table doesn't exist.
     const { error } = await supabase.from('print_jobs').insert({
       order_id: orderId,
       shop_id: shopId,
@@ -18,31 +28,28 @@ export class PrintJobsRepository {
     });
 
     if (error) {
-      if (error.code === '42P01' || error.message.includes('schema cache')) {
-        // Table doesn't exist, we skip or handle gracefully in a real scenario
-        console.warn(
-          'print_jobs table does not exist yet. Skipping job record creation.',
-        );
-      } else {
-        throw new InternalServerErrorException(
-          'Failed to create print job record: ' + error.message,
-        );
-      }
+      if (error.code === '23505') return false;
+      throw new InternalServerErrorException(
+        'Failed to claim print job: ' + error.message,
+      );
     }
+    return true;
   }
 
-  async updateJobStatus(orderId: string, status: string): Promise<void> {
+  async updateJobStatus(
+    orderId: string,
+    shopId: string,
+    status: string,
+  ): Promise<void> {
     const supabase = this.supabaseService.getAdminClient();
     const { error } = await supabase
       .from('print_jobs')
-      .update({ status })
-      .eq('order_id', orderId);
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq('order_id', orderId)
+      .eq('shop_id', shopId)
+      .neq('status', 'FAILED');
 
-    if (
-      error &&
-      error.code !== '42P01' &&
-      !error.message.includes('schema cache')
-    ) {
+    if (error) {
       throw new InternalServerErrorException(
         'Failed to update print job status: ' + error.message,
       );

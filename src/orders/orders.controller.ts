@@ -16,11 +16,21 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
-import { UploadReceiptDto } from './dto/upload-receipt.dto';
+import { UpdateDraftDto } from './dto/update-draft.dto';
+import { VerifyPaymentDto } from './dto/verify-payment.dto';
+import { UpdateOrderStateDto } from './dto/update-order-state.dto';
 import { SupabaseAuthGuard } from '../iam/guards/supabase-auth.guard';
 import { RolesGuard } from '../iam/guards/roles.guard';
 import { Roles } from '../iam/decorators/roles.decorator';
 import type { Request } from 'express';
+import {
+  DOCUMENT_MIME_TYPES,
+  IMAGE_MIME_TYPES,
+  MAX_DOCUMENT_BYTES,
+  MAX_IMAGE_BYTES,
+  secureUploadOptions,
+} from '../common/upload-security';
+import { Throttle } from '@nestjs/throttler';
 
 @Controller('orders')
 @UseGuards(SupabaseAuthGuard, RolesGuard)
@@ -77,7 +87,13 @@ export class OrdersController {
 
   @Post()
   @Roles('STUDENT')
-  @UseInterceptors(FileInterceptor('file'))
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @UseInterceptors(
+    FileInterceptor(
+      'file',
+      secureUploadOptions(DOCUMENT_MIME_TYPES, MAX_DOCUMENT_BYTES),
+    ),
+  )
   async createOrder(
     @Body() createOrderDto: CreateOrderDto,
     @UploadedFile() file: Express.Multer.File,
@@ -103,14 +119,7 @@ export class OrdersController {
   @Roles('STUDENT')
   async updateDraft(
     @Param('id') draftId: string,
-    @Body()
-    body: {
-      shopId: string;
-      paperSize: string;
-      printColorMode: string;
-      total: number;
-      pageCount: number;
-    },
+    @Body() body: UpdateDraftDto,
     @Req() req: Request,
   ) {
     const userId = (req as any).user.id;
@@ -126,7 +135,13 @@ export class OrdersController {
 
   @Post(':id/receipt')
   @Roles('STUDENT')
-  @UseInterceptors(FileInterceptor('receiptFile'))
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @UseInterceptors(
+    FileInterceptor(
+      'receiptFile',
+      secureUploadOptions(IMAGE_MIME_TYPES, MAX_IMAGE_BYTES),
+    ),
+  )
   async uploadReceipt(
     @Param('id') orderId: string,
     @UploadedFile() receiptFile: Express.Multer.File,
@@ -149,7 +164,7 @@ export class OrdersController {
   @Roles('CLERK', 'MANAGER')
   async verifyPayment(
     @Param('id') orderId: string,
-    @Body() body: { action: 'APPROVE' | 'REJECT'; reason?: string },
+    @Body() body: VerifyPaymentDto,
     @Req() req: Request,
   ) {
     const clerkId = (req as any).user.id;
@@ -189,10 +204,10 @@ export class OrdersController {
   @Roles('CLERK', 'MANAGER')
   async updateOrderState(
     @Param('id') orderId: string,
-    @Body('state') state: string,
+    @Body() body: UpdateOrderStateDto,
     @Req() req: Request,
   ) {
     const shopId = (req as any).user.id;
-    return this.ordersService.updateOrderState(shopId, orderId, state);
+    return this.ordersService.updateOrderState(shopId, orderId, body.state);
   }
 }

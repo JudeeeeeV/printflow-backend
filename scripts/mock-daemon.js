@@ -1,12 +1,18 @@
 const io = require('socket.io-client');
 
-const SHOP_ID = process.argv[2] || 'test-shop-id';
-const URL = 'http://localhost:3000/daemon';
+const SHOP_ID = process.argv[2];
+const ACCESS_TOKEN = process.env.PRINTFLOW_DAEMON_ACCESS_TOKEN;
+const URL = `${process.env.PRINTFLOW_BACKEND_URL || 'http://localhost:3000'}/daemon`;
+
+if (!SHOP_ID || !ACCESS_TOKEN) {
+  throw new Error('Shop ID and PRINTFLOW_DAEMON_ACCESS_TOKEN are required');
+}
 
 console.log(`Starting mock daemon for shop: ${SHOP_ID}`);
 
 const socket = io(URL, {
   query: { shopId: SHOP_ID, role: 'daemon' },
+  auth: { token: ACCESS_TOKEN },
 });
 
 socket.on('connect', () => {
@@ -34,17 +40,17 @@ socket.on('batch_execute', (payload) => {
       console.log(`Simulating DOWNLOAD for order ${order.id}`);
       socket.emit('job_status_update', {
         orderId: order.id,
-        shopId: SHOP_ID,
         status: 'DOWNLOADING',
       });
     }, delay);
 
     // Simulate sending to spooler
     setTimeout(() => {
-      console.log(`Simulating SPOOLER for order ${order.id}. Color Mode: ${order.print_color_mode}`);
+      console.log(
+        `Simulating SPOOLER for order ${order.id}. Color Mode: ${order.print_color_mode}`,
+      );
       socket.emit('job_status_update', {
         orderId: order.id,
-        shopId: SHOP_ID,
         status: 'SENT_TO_SPOOLER',
       });
     }, delay + 2000);
@@ -54,7 +60,6 @@ socket.on('batch_execute', (payload) => {
       console.log(`Simulating COMPLETED for order ${order.id}`);
       socket.emit('job_status_update', {
         orderId: order.id,
-        shopId: SHOP_ID,
         status: 'COMPLETED',
       });
     }, delay + 4000);

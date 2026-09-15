@@ -4,10 +4,18 @@ const bcrypt = require('bcrypt');
 require('dotenv').config({ path: './.env' });
 
 async function seedAdmin() {
-  const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
-  
-  const email = 'jiezelmaelibres@gmail.com';
-  const password = 'printflow123';
+  const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY,
+  );
+
+  const email = process.env.SEED_ADMIN_EMAIL;
+  const password = process.env.SEED_ADMIN_PASSWORD;
+  if (!email || !password || password.length < 12) {
+    throw new Error(
+      'SEED_ADMIN_EMAIL and a strong SEED_ADMIN_PASSWORD are required',
+    );
+  }
   const password_hash = await bcrypt.hash(password, 10);
 
   const { data, error } = await supabase

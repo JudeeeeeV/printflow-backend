@@ -4,7 +4,6 @@ import {
   Post,
   Patch,
   Body,
-  Param,
   UseGuards,
   Req,
   BadRequestException,
@@ -17,6 +16,14 @@ import { SupabaseAuthGuard } from '../iam/guards/supabase-auth.guard';
 import { RolesGuard } from '../iam/guards/roles.guard';
 import { Roles } from '../iam/decorators/roles.decorator';
 import type { Request } from 'express';
+import {
+  DOCUMENT_MIME_TYPES,
+  IMAGE_MIME_TYPES,
+  MAX_DOCUMENT_BYTES,
+  MAX_IMAGE_BYTES,
+  secureUploadOptions,
+} from '../common/upload-security';
+import { Throttle } from '@nestjs/throttler';
 
 @Controller('shops')
 export class ShopsController {
@@ -49,7 +56,13 @@ export class ShopsController {
   @Post('verify')
   @UseGuards(SupabaseAuthGuard, RolesGuard)
   @Roles('CLERK', 'MANAGER')
-  @UseInterceptors(FileInterceptor('permit'))
+  @Throttle({ default: { limit: 3, ttl: 3_600_000 } })
+  @UseInterceptors(
+    FileInterceptor(
+      'permit',
+      secureUploadOptions(DOCUMENT_MIME_TYPES, MAX_DOCUMENT_BYTES),
+    ),
+  )
   async verifyPermit(
     @Req() req: Request,
     @UploadedFile() file: Express.Multer.File,
@@ -65,7 +78,13 @@ export class ShopsController {
   @Post('gcash-qr')
   @UseGuards(SupabaseAuthGuard, RolesGuard)
   @Roles('CLERK', 'MANAGER')
-  @UseInterceptors(FileInterceptor('qrCode'))
+  @Throttle({ default: { limit: 5, ttl: 3_600_000 } })
+  @UseInterceptors(
+    FileInterceptor(
+      'qrCode',
+      secureUploadOptions(IMAGE_MIME_TYPES, MAX_IMAGE_BYTES),
+    ),
+  )
   async uploadGcashQr(
     @Req() req: Request,
     @UploadedFile() file: Express.Multer.File,

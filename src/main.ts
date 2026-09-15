@@ -14,6 +14,7 @@ async function bootstrap() {
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
+      forbidNonWhitelisted: true,
       transform: true,
     }),
   );
@@ -28,8 +29,16 @@ async function bootstrap() {
     allowedHeaders: 'Content-Type, Authorization',
   });
 
+  const expressApp = app.getHttpAdapter().getInstance() as unknown as {
+    disable(name: string): void;
+    set(name: string, value: number): void;
+  };
+  expressApp.disable('x-powered-by');
+  expressApp.set('trust proxy', 1);
+  app.enableShutdownHooks();
+
   const port = process.env.PORT || 3000;
   await app.listen(port, '0.0.0.0');
   logger.log(`PrintFlow Backend running on port ${port}`);
 }
-bootstrap();
+void bootstrap();

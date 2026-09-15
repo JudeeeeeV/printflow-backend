@@ -3,13 +3,32 @@ import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { JwtModule } from '@nestjs/jwt';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 
 @Module({
   imports: [
     SupabaseModule,
-    JwtModule.register({
-      secret: process.env.JWT_SECRET || 'super_secret_admin_key_2026_printflow',
-      signOptions: { expiresIn: '8h' },
+    JwtModule.registerAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => {
+        const secret = configService.get<string>('JWT_SECRET');
+        if (!secret || secret.length < 32) {
+          throw new Error(
+            'JWT_SECRET must be configured with at least 32 characters',
+          );
+        }
+
+        return {
+          secret,
+          signOptions: {
+            algorithm: 'HS256' as const,
+            issuer: 'printflow-api',
+            audience: 'printflow-admin',
+            expiresIn: '8h' as const,
+          },
+        };
+      },
     }),
   ],
   controllers: [AdminController],

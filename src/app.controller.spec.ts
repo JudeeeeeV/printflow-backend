@@ -15,8 +15,12 @@ describe('AppController', () => {
   });
 
   describe('root', () => {
-    it('should return "Hello World!"', () => {
-      expect(appController.getHello()).toBe('Hello World!');
+    it('should identify the API', () => {
+      expect(appController.getHello()).toBe('PrintFlow API');
+    });
+
+    it('should expose a healthy liveness response', () => {
+      expect(appController.getHealth().status).toBe('ok');
     });
   });
 });

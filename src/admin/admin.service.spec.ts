@@ -1,18 +1,10 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import { AdminService } from './admin.service';
+import { SupabaseService } from '../supabase/supabase.service';
+import { JwtService } from '@nestjs/jwt';
 
 describe('AdminService', () => {
-  let service: AdminService;
-
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [AdminService],
-    }).compile();
-
-    service = module.get<AdminService>(AdminService);
-  });
-
   it('should be defined', () => {
+    const service = new AdminService({} as SupabaseService, {} as JwtService);
     expect(service).toBeDefined();
   });
 });

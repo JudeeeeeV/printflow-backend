@@ -3,19 +3,130 @@ import {
   InternalServerErrorException,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { PDFDocument } from 'pdf-lib';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../supabase/supabase.service';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { UpdateDraftDto } from './dto/update-draft.dto';
+import {
+  assertFileSignature,
+  DOCUMENT_MIME_TYPES,
+  IMAGE_MIME_TYPES,
+  secureObjectName,
+} from '../common/upload-security';
 
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
 
   constructor(private readonly supabaseService: SupabaseService) {}
+
+  private async requireVerifiedShop(shopId: string): Promise<void> {
+    const { data, error } = await this.supabaseService
+      .getAdminClient()
+      .from('shops')
+      .select('id')
+      .eq('id', shopId)
+      .eq('verification_status', 'VERIFIED')
+      .single();
+    if (error || !data) {
+      throw new ForbiddenException('A verified shop account is required');
+    }
+  }
+
+  private calculatePrice(
+    pricingMatrix: any,
+    paperSize: string,
+    printColorMode: string,
+    pageCount: number,
+  ): number {
+    const basePrice = Number(pricingMatrix?.paper_sizes?.[paperSize]);
+    const colorAdditive = Number(
+      pricingMatrix?.color_mode_multipliers?.[printColorMode],
+    );
+    if (
+      !Number.isFinite(basePrice) ||
+      basePrice < 0 ||
+      !Number.isFinite(colorAdditive) ||
+      colorAdditive < 0 ||
+      !Number.isInteger(pageCount) ||
+      pageCount < 1
+    ) {
+      throw new BadRequestException('Invalid print options or shop pricing');
+    }
+    return Math.round((basePrice + colorAdditive) * pageCount * 100) / 100;
+  }
+
+  private async getAssetPageCount(orderId: string): Promise<number> {
+    const supabase = this.supabaseService.getAdminClient();
+    const { data: asset, error } = await supabase
+      .from('assets')
+      .select('file_url, file_type')
+      .eq('order_id', orderId)
+      .limit(1)
+      .single();
+    if (error || !asset) throw new BadRequestException('Draft asset not found');
+    if (asset.file_type !== 'PDF') return 1;
+
+    const path = this.supabaseService.storagePath(asset.file_url, 'assets');
+    if (!path) throw new BadRequestException('Draft asset path is invalid');
+    const { data: blob, error: downloadError } = await supabase.storage
+      .from('assets')
+      .download(path);
+    if (downloadError || !blob) {
+      throw new BadRequestException('Draft asset could not be validated');
+    }
+    try {
+      const document = await PDFDocument.load(await blob.arrayBuffer());
+      const pages = document.getPageCount();
+      if (pages < 1) throw new Error('PDF has no pages');
+      return pages;
+    } catch {
+      throw new BadRequestException('Draft PDF is invalid');
+    }
+  }
+
+  private async signOrderStorageFields(order: any): Promise<any> {
+    const signed = { ...order };
+    if (Array.isArray(order.assets)) {
+      signed.assets = await Promise.all(
+        order.assets.map(async (asset: any) => ({
+          ...asset,
+          file_url: await this.supabaseService.createSignedStorageUrl(
+            'assets',
+            asset.file_url,
+            300,
+          ),
+        })),
+      );
+    }
+    if (Array.isArray(order.payment_receipts)) {
+      signed.payment_receipts = await Promise.all(
+        order.payment_receipts.map(async (receipt: any) => ({
+          ...receipt,
+          receipt_url: await this.supabaseService.createSignedStorageUrl(
+            'receipts',
+            receipt.receipt_url,
+            300,
+          ),
+        })),
+      );
+    }
+    if (order.shops?.gcash_qr_url) {
+      signed.shops = {
+        ...order.shops,
+        gcash_qr_url: await this.supabaseService.createSignedStorageUrl(
+          'gcash_qrs',
+          order.shops.gcash_qr_url,
+          300,
+        ),
+      };
+    }
+    return signed;
+  }
 
   @Cron(CronExpression.EVERY_MINUTE)
   async cleanupExpiredOrders() {
@@ -63,6 +174,8 @@ export class OrdersService {
     limit: number = 10,
   ) {
     const supabase = this.supabaseService.getAdminClient();
+    page = Number.isInteger(page) && page > 0 ? page : 1;
+    limit = Number.isInteger(limit) ? Math.min(Math.max(limit, 1), 100) : 10;
     let query = supabase
       .from('orders')
       .select('*, shops(name)', { count: 'exact' })
@@ -90,7 +203,9 @@ export class OrdersService {
     const totalPages = Math.max(1, Math.ceil(totalItems / limit));
 
     return {
-      data,
+      data: await Promise.all(
+        (data || []).map((order) => this.signOrderStorageFields(order)),
+      ),
       meta: {
         currentPage: page,
         totalPages,
@@ -101,6 +216,7 @@ export class OrdersService {
 
   async getShopOrders(shopId: string) {
     const supabase = this.supabaseService.getAdminClient();
+    await this.requireVerifiedShop(shopId);
     const { data, error } = await supabase
       .from('orders')
       .select('*, payment_receipts(*), assets(*)')
@@ -112,7 +228,9 @@ export class OrdersService {
         'Failed to fetch shop orders: ' + error.message,
       );
     }
-    return data;
+    return Promise.all(
+      (data || []).map((order) => this.signOrderStorageFields(order)),
+    );
   }
 
   async getOrder(userId: string, orderId: string) {
@@ -127,11 +245,13 @@ export class OrdersService {
     if (error || !data) {
       throw new NotFoundException('Order not found');
     }
-    return data;
+    return this.signOrderStorageFields(data);
   }
 
   async getDrafts(userId: string, page: number = 1, limit: number = 10) {
     const supabase = this.supabaseService.getAdminClient();
+    page = Number.isInteger(page) && page > 0 ? page : 1;
+    limit = Number.isInteger(limit) ? Math.min(Math.max(limit, 1), 100) : 10;
 
     const from = (page - 1) * limit;
     const to = from + limit - 1;
@@ -154,31 +274,42 @@ export class OrdersService {
       );
     }
 
-    const mappedData = data.map((order: any) => {
-      let fileUrl = '';
-      let fileName = 'Design File';
+    const mappedData = await Promise.all(
+      (data || []).map(async (order: any) => {
+        let fileUrl = '';
+        let fileName = 'Design File';
 
-      if (order.assets && order.assets.length > 0 && order.assets[0].file_url) {
-        fileUrl = order.assets[0].file_url;
-        const urlParts = fileUrl.split('/');
-        const rawName = decodeURIComponent(urlParts[urlParts.length - 1]);
-        const match = rawName.match(/-\d{13}-(.+)$/);
-        fileName = match ? match[1] : rawName;
-      }
+        if (
+          order.assets &&
+          order.assets.length > 0 &&
+          order.assets[0].file_url
+        ) {
+          fileUrl =
+            (await this.supabaseService.createSignedStorageUrl(
+              'assets',
+              order.assets[0].file_url,
+              300,
+            )) || '';
+          const urlParts = fileUrl.split('/');
+          const rawName = decodeURIComponent(urlParts[urlParts.length - 1]);
+          const match = rawName.match(/-\d{13}-(.+)$/);
+          fileName = match ? match[1] : rawName;
+        }
 
-      return {
-        id: order.id,
-        shopId: order.shop_id,
-        shopName: order.shops?.name || 'Unknown Shop',
-        fileName: fileName,
-        fileUrl: fileUrl,
-        total: order.total,
-        updatedAt: order.created_at,
-        paperSize: order.paper_size,
-        printColorMode: order.print_color_mode,
-        pageCount: order.page_count,
-      };
-    });
+        return {
+          id: order.id,
+          shopId: order.shop_id,
+          shopName: order.shops?.name || 'Unknown Shop',
+          fileName: fileName,
+          fileUrl: fileUrl,
+          total: order.total,
+          updatedAt: order.created_at,
+          paperSize: order.paper_size,
+          printColorMode: order.print_color_mode,
+          pageCount: order.page_count,
+        };
+      }),
+    );
 
     const totalItems = count || 0;
     const totalPages = Math.max(1, Math.ceil(totalItems / limit));
@@ -193,17 +324,7 @@ export class OrdersService {
     };
   }
 
-  async updateDraft(
-    userId: string,
-    draftId: string,
-    payload: {
-      shopId: string;
-      paperSize: string;
-      printColorMode: string;
-      total: number;
-      pageCount: number;
-    },
-  ) {
+  async updateDraft(userId: string, draftId: string, payload: UpdateDraftDto) {
     const supabase = this.supabaseService.getAdminClient();
 
     const { data: order, error: fetchError } = await supabase
@@ -217,20 +338,42 @@ export class OrdersService {
       throw new BadRequestException('Draft not found or not in draft state.');
     }
 
-    const { error: updateError } = await supabase
+    await this.requireVerifiedShop(payload.shopId);
+    const { data: shop, error: shopError } = await supabase
+      .from('shops')
+      .select('pricing_matrix')
+      .eq('id', payload.shopId)
+      .eq('verification_status', 'VERIFIED')
+      .single();
+    if (shopError || !shop)
+      throw new BadRequestException('Shop is unavailable');
+
+    const pageCount = await this.getAssetPageCount(draftId);
+    const total = this.calculatePrice(
+      shop.pricing_matrix,
+      payload.paperSize,
+      payload.printColorMode,
+      pageCount,
+    );
+
+    const { data: updatedDraft, error: updateError } = await supabase
       .from('orders')
       .update({
         shop_id: payload.shopId,
         paper_size: payload.paperSize,
         print_color_mode: payload.printColorMode,
-        total: payload.total,
-        page_count: payload.pageCount,
+        total,
+        page_count: pageCount,
       })
-      .eq('id', draftId);
+      .eq('id', draftId)
+      .eq('client_id', userId)
+      .eq('state', 'DRAFT')
+      .select('id')
+      .maybeSingle();
 
-    if (updateError) {
+    if (updateError || !updatedDraft) {
       throw new InternalServerErrorException(
-        'Failed to update draft: ' + updateError.message,
+        'Failed to update draft because it changed concurrently',
       );
     }
 
@@ -242,7 +385,7 @@ export class OrdersService {
 
     const { data: order, error: fetchError } = await supabase
       .from('orders')
-      .select('state')
+      .select('state, shop_id, paper_size, print_color_mode')
       .eq('id', draftId)
       .eq('client_id', userId)
       .single();
@@ -255,17 +398,39 @@ export class OrdersService {
       throw new BadRequestException('Order is not a draft.');
     }
 
-    const { error: updateError } = await supabase
+    await this.requireVerifiedShop(order.shop_id);
+    const { data: shop, error: shopError } = await supabase
+      .from('shops')
+      .select('pricing_matrix')
+      .eq('id', order.shop_id)
+      .single();
+    if (shopError || !shop)
+      throw new BadRequestException('Shop is unavailable');
+    const pageCount = await this.getAssetPageCount(draftId);
+    const total = this.calculatePrice(
+      shop.pricing_matrix,
+      order.paper_size,
+      order.print_color_mode,
+      pageCount,
+    );
+
+    const { data: submittedDraft, error: updateError } = await supabase
       .from('orders')
       .update({
         state: 'OPEN_INQUIRY',
+        total,
+        page_count: pageCount,
         created_at: new Date().toISOString(), // This resets the 15-minute clock!
       })
-      .eq('id', draftId);
+      .eq('id', draftId)
+      .eq('client_id', userId)
+      .eq('state', 'DRAFT')
+      .select('id')
+      .maybeSingle();
 
-    if (updateError) {
+    if (updateError || !submittedDraft) {
       throw new InternalServerErrorException(
-        'Failed to submit draft: ' + updateError.message,
+        'Failed to submit draft because it changed concurrently',
       );
     }
 
@@ -297,6 +462,7 @@ export class OrdersService {
     file: Express.Multer.File,
   ) {
     const supabase = this.supabaseService.getAdminClient();
+    assertFileSignature(file, DOCUMENT_MIME_TYPES);
 
     // Evaluate the string sent by FormData
     const isDraftOrder = payload.isDraft === 'true';
@@ -307,34 +473,32 @@ export class OrdersService {
       .from('shops')
       .select('pricing_matrix')
       .eq('id', payload.shopId)
+      .eq('verification_status', 'VERIFIED')
       .single();
 
     if (shopError || !shop) {
       throw new InternalServerErrorException('Failed to fetch shop details.');
     }
 
-    const pricingMatrix = shop.pricing_matrix || {
-      paper_sizes: { SHORT: 2.0, A4: 3.0, LONG: 4.0 },
-      color_mode_multipliers: { BLACK_AND_WHITE: 0.0, COLOR: 3.0 },
-    };
+    const pricingMatrix = shop.pricing_matrix;
 
     let pageCount = 1;
     if (file.mimetype === 'application/pdf') {
       try {
         const pdfDoc = await PDFDocument.load(file.buffer);
         pageCount = pdfDoc.getPageCount();
-      } catch (e) {
-        console.warn(
-          'Failed to parse PDF on backend, defaulting to 1 page:',
-          e,
-        );
+        if (pageCount < 1) throw new Error('PDF has no pages');
+      } catch {
+        throw new BadRequestException('The uploaded PDF is invalid');
       }
     }
 
-    const basePrice = pricingMatrix.paper_sizes[payload.paperSize] || 3.0;
-    const colorAdditive =
-      pricingMatrix.color_mode_multipliers[payload.printColorMode] || 0.0;
-    const calculatedTotal = (basePrice + colorAdditive) * pageCount;
+    const calculatedTotal = this.calculatePrice(
+      pricingMatrix,
+      payload.paperSize,
+      payload.printColorMode,
+      pageCount,
+    );
 
     // 1. Create the base order ledger entry
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
@@ -361,8 +525,8 @@ export class OrdersService {
 
     // 2. Upload the raw design asset to the 'assets' bucket
     await this.ensureAssetsBucket();
-    const fileName = `${userId}-${order.id}-${Date.now()}-${file.originalname}`;
-    const { data: uploadData, error: uploadError } = await supabase.storage
+    const fileName = secureObjectName(`${userId}/${order.id}`, file.mimetype);
+    const { error: uploadError } = await supabase.storage
       .from('assets')
       .upload(fileName, file.buffer, {
         contentType: file.mimetype,
@@ -374,18 +538,12 @@ export class OrdersService {
       );
     }
 
-    const { data: urlData } = supabase.storage
-      .from('assets')
-      .getPublicUrl(fileName);
-
-    const publicUrl = urlData.publicUrl;
-
     // 3. Link the design asset to the newly created order
     const { error: assetError } = await supabase.from('assets').insert({
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       order_id: order.id,
 
-      file_url: publicUrl,
+      file_url: fileName,
       dpi: 300, // Baseline required by application logic
       file_type: file.mimetype.startsWith('image/') ? 'IMAGE' : 'PDF',
     });
@@ -407,47 +565,11 @@ export class OrdersService {
   }
 
   async ensureReceiptsBucket() {
-    const supabase = this.supabaseService.getAdminClient();
-    const { data: buckets, error: listError } =
-      await supabase.storage.listBuckets();
-    if (listError) {
-      this.logger.error('Error listing buckets:', listError);
-      throw new InternalServerErrorException(
-        `Failed to list buckets: ${listError.message}`,
-      );
-    }
-    if (!buckets?.find((b) => b.name === 'receipts')) {
-      const { error: createError } = await supabase.storage.createBucket(
-        'receipts',
-        { public: true },
-      );
-      if (createError)
-        throw new InternalServerErrorException(
-          `Failed to create receipts bucket: ${createError.message}`,
-        );
-    }
+    await this.supabaseService.ensurePrivateBucket('receipts');
   }
 
   async ensureAssetsBucket() {
-    const supabase = this.supabaseService.getAdminClient();
-    const { data: buckets, error: listError } =
-      await supabase.storage.listBuckets();
-    if (listError) {
-      this.logger.error('Error listing buckets:', listError);
-      throw new InternalServerErrorException(
-        `Failed to list buckets: ${listError.message}`,
-      );
-    }
-    if (!buckets?.find((b) => b.name === 'assets')) {
-      const { error: createError } = await supabase.storage.createBucket(
-        'assets',
-        { public: true },
-      );
-      if (createError)
-        throw new InternalServerErrorException(
-          `Failed to create assets bucket: ${createError.message}`,
-        );
-    }
+    await this.supabaseService.ensurePrivateBucket('assets');
   }
 
   async submitPaymentReceipt(
@@ -457,6 +579,8 @@ export class OrdersService {
     referenceNumber?: string,
   ) {
     const supabase = this.supabaseService.getAdminClient();
+    assertFileSignature(file, IMAGE_MIME_TYPES);
+    await this.ensureReceiptsBucket();
 
     const { data: order, error: fetchError } = await supabase
       .from('orders')
@@ -483,7 +607,7 @@ export class OrdersService {
 
     // Assume bucket exists. User should create it in Supabase Dashboard.
 
-    const fileName = `${orderId}-${Date.now()}-${file.originalname}`;
+    const fileName = secureObjectName(`${userId}/${orderId}`, file.mimetype);
     const { error: uploadError } = await supabase.storage
       .from('receipts')
       .upload(fileName, file.buffer, {
@@ -496,17 +620,12 @@ export class OrdersService {
       );
     }
 
-    const { data: urlData } = supabase.storage
-      .from('receipts')
-      .getPublicUrl(fileName);
-    const receiptUrl = urlData.publicUrl;
-
     const { error: receiptError } = await supabase
       .from('payment_receipts')
       .insert({
         order_id: orderId,
         uploaded_by: userId,
-        receipt_url: receiptUrl,
+        receipt_url: fileName,
         reference_number: referenceNumber || null,
         verified: false,
       });
@@ -517,12 +636,16 @@ export class OrdersService {
       );
     }
 
-    const { error: updateError } = await supabase
+    const { data: updatedOrder, error: updateError } = await supabase
       .from('orders')
       .update({ state: 'AWAITING_PAYMENT_VERIFICATION' })
-      .eq('id', orderId);
+      .eq('id', orderId)
+      .eq('client_id', userId)
+      .in('state', ['PROOF_APPROVED', 'AWAITING_PAYMENT', 'OPEN_INQUIRY'])
+      .select('id')
+      .maybeSingle();
 
-    if (updateError) {
+    if (updateError || !updatedOrder) {
       throw new InternalServerErrorException(
         'Receipt uploaded, but failed to update order state.',
       );
@@ -561,18 +684,22 @@ export class OrdersService {
       );
     }
 
-    const { error: updateError } = await supabase
+    const { data: disputedOrder, error: updateError } = await supabase
       .from('orders')
       .update({
         state: 'ESCALATED_DISPUTE',
         dispute_reason: reason,
         expires_at: null, // Clear expiration timer during dispute
       })
-      .eq('id', orderId);
+      .eq('id', orderId)
+      .eq('client_id', userId)
+      .eq('state', 'AWAITING_PAYMENT')
+      .select('id')
+      .maybeSingle();
 
-    if (updateError) {
+    if (updateError || !disputedOrder) {
       throw new InternalServerErrorException(
-        'Failed to escalate dispute: ' + updateError.message,
+        'Failed to escalate dispute because the order changed concurrently',
       );
     }
 
@@ -586,12 +713,14 @@ export class OrdersService {
     reason?: string,
   ) {
     const supabase = this.supabaseService.getAdminClient();
+    await this.requireVerifiedShop(clerkId);
 
     // In a real app we might verify if clerkId belongs to the shop that owns the order
     const { data: order, error: fetchError } = await supabase
       .from('orders')
-      .select('state')
+      .select('state, shop_id')
       .eq('id', orderId)
+      .eq('shop_id', clerkId)
       .single();
 
     if (fetchError || !order) {
@@ -610,12 +739,16 @@ export class OrdersService {
         .update({ verified: true })
         .eq('order_id', orderId);
 
-      const { error: updateError } = await supabase
+      const { data: approvedOrder, error: updateError } = await supabase
         .from('orders')
         .update({ state: 'IN_PRODUCTION' })
-        .eq('id', orderId);
+        .eq('id', orderId)
+        .eq('shop_id', clerkId)
+        .eq('state', 'AWAITING_PAYMENT_VERIFICATION')
+        .select('id')
+        .maybeSingle();
 
-      if (updateError)
+      if (updateError || !approvedOrder)
         throw new InternalServerErrorException('Failed to update order state.');
 
       // Clear notifications
@@ -630,16 +763,20 @@ export class OrdersService {
       const expiresAt = new Date(
         Date.now() + 24 * 60 * 60 * 1000,
       ).toISOString();
-      const { error: updateError } = await supabase
+      const { data: rejectedOrder, error: updateError } = await supabase
         .from('orders')
         .update({
           state: 'AWAITING_PAYMENT',
           shop_rejection_reason: reason || null,
           expires_at: expiresAt,
         })
-        .eq('id', orderId);
+        .eq('id', orderId)
+        .eq('shop_id', clerkId)
+        .eq('state', 'AWAITING_PAYMENT_VERIFICATION')
+        .select('id')
+        .maybeSingle();
 
-      if (updateError)
+      if (updateError || !rejectedOrder)
         throw new InternalServerErrorException('Failed to update order state.');
 
       // Clear notifications
@@ -668,23 +805,36 @@ export class OrdersService {
       throw new NotFoundException('Order not found or access denied.');
     }
 
-    const { error: deleteError } = await supabase
+    const cancellableStates = ['DRAFT', 'OPEN_INQUIRY', 'AWAITING_PAYMENT'];
+    if (!cancellableStates.includes(order.state)) {
+      throw new BadRequestException('This order can no longer be cancelled');
+    }
+
+    const { data: deletedOrder, error: deleteError } = await supabase
       .from('orders')
       .delete()
       .eq('id', orderId)
-      .eq('client_id', userId);
+      .eq('client_id', userId)
+      .in('state', cancellableStates)
+      .select('id')
+      .maybeSingle();
 
-    if (deleteError) {
+    if (deleteError || !deletedOrder) {
       throw new InternalServerErrorException(
-        'Failed to cancel order: ' + deleteError.message,
+        'Failed to cancel order because it changed concurrently',
       );
     }
 
     return { message: 'Order cancelled successfully' };
   }
 
-  async updateOrderState(shopId: string, orderId: string, newState: string) {
+  async updateOrderState(
+    shopId: string,
+    orderId: string,
+    newState: 'READY_FOR_PICKUP' | 'COMPLETED',
+  ) {
     const supabase = this.supabaseService.getAdminClient();
+    await this.requireVerifiedShop(shopId);
 
     const { data: order, error: fetchError } = await supabase
       .from('orders')
@@ -697,14 +847,29 @@ export class OrdersService {
       throw new NotFoundException('Order not found or access denied.');
     }
 
-    const { error: updateError } = await supabase
+    const transitions: Record<string, string[]> = {
+      IN_PRODUCTION: ['READY_FOR_PICKUP'],
+      PRINTED: ['READY_FOR_PICKUP'],
+      READY_FOR_PICKUP: ['COMPLETED'],
+    };
+    if (!transitions[order.state]?.includes(newState)) {
+      throw new BadRequestException(
+        `Cannot transition an order from ${order.state} to ${newState}`,
+      );
+    }
+
+    const { data: updatedOrder, error: updateError } = await supabase
       .from('orders')
       .update({ state: newState })
-      .eq('id', orderId);
+      .eq('id', orderId)
+      .eq('shop_id', shopId)
+      .eq('state', order.state)
+      .select('id')
+      .maybeSingle();
 
-    if (updateError) {
+    if (updateError || !updatedOrder) {
       throw new InternalServerErrorException(
-        'Failed to update order state: ' + updateError.message,
+        'Failed to update order state because it changed concurrently',
       );
     }
 

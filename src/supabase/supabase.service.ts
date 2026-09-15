@@ -1,9 +1,14 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 @Injectable()
-export class SupabaseService {
+export class SupabaseService implements OnModuleInit {
   private readonly logger = new Logger(SupabaseService.name);
   private supabase: SupabaseClient;
 
@@ -42,5 +47,86 @@ export class SupabaseService {
         },
       },
     );
+  }
+
+  async onModuleInit(): Promise<void> {
+    for (const bucket of ['assets', 'receipts', 'permits', 'gcash_qrs']) {
+      await this.ensurePrivateBucket(bucket);
+    }
+  }
+
+  async ensurePrivateBucket(bucket: string): Promise<void> {
+    const client = this.getAdminClient();
+    const { data: buckets, error: listError } =
+      await client.storage.listBuckets();
+    if (listError) {
+      throw new InternalServerErrorException(
+        `Failed to inspect storage bucket ${bucket}`,
+      );
+    }
+
+    const existing = buckets?.find((candidate) => candidate.name === bucket);
+    if (!existing) {
+      const { error } = await client.storage.createBucket(bucket, {
+        public: false,
+      });
+      if (error) {
+        throw new InternalServerErrorException(
+          `Failed to create storage bucket ${bucket}`,
+        );
+      }
+      return;
+    }
+
+    if (existing.public) {
+      const { error } = await client.storage.updateBucket(bucket, {
+        public: false,
+      });
+      if (error) {
+        throw new InternalServerErrorException(
+          `Failed to secure storage bucket ${bucket}`,
+        );
+      }
+    }
+  }
+
+  storagePath(value: string, bucket: string): string {
+    if (!value) return '';
+    if (!/^https?:\/\//i.test(value)) return value.replace(/^\/+/, '');
+
+    try {
+      const url = new URL(value);
+      const markers = [
+        `/storage/v1/object/public/${bucket}/`,
+        `/storage/v1/object/sign/${bucket}/`,
+      ];
+      const marker = markers.find((candidate) =>
+        url.pathname.includes(candidate),
+      );
+      if (!marker) return '';
+      return decodeURIComponent(url.pathname.split(marker)[1] || '');
+    } catch {
+      return '';
+    }
+  }
+
+  async createSignedStorageUrl(
+    bucket: string,
+    storedValue: string | null | undefined,
+    expiresInSeconds = 300,
+  ): Promise<string | null> {
+    if (!storedValue) return null;
+    const path = this.storagePath(storedValue, bucket);
+    if (!path) return null;
+    const { data, error } = await this.getAdminClient()
+      .storage.from(bucket)
+      .createSignedUrl(path, expiresInSeconds);
+    if (error) {
+      this.logger.warn(
+        `Could not sign ${bucket} object ${path}: ${error.message}`,
+      );
+      return null;
+    }
+    return data.signedUrl;
   }
 }

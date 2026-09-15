@@ -3,25 +3,49 @@ import {
   InternalServerErrorException,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { EdgeDaemonGateway } from './edge-daemon.gateway';
-import { AssetUrlSigningService } from './services/asset-url-signing.service';
 import { PrintJobsRepository } from './repositories/print-jobs.repository';
 import { SupabaseService } from '../supabase/supabase.service';
+
+interface PrintOrder {
+  id: string;
+  state: string;
+  print_color_mode: string;
+  assets: Array<{ file_url: string }>;
+}
 
 @Injectable()
 export class PrintSpoolerService {
   private readonly logger = new Logger(PrintSpoolerService.name);
+  private readonly recentlyDispatched = new Map<string, number>();
 
   constructor(
     private readonly gateway: EdgeDaemonGateway,
-    private readonly urlSigner: AssetUrlSigningService,
     private readonly printJobsRepo: PrintJobsRepository,
     private readonly supabaseService: SupabaseService,
   ) {}
 
   async executeBatch(orderIds: string[], shopId: string, printerName?: string) {
     const supabase = this.supabaseService.getAdminClient();
+
+    const { data: shop, error: shopError } = await supabase
+      .from('shops')
+      .select('id')
+      .eq('id', shopId)
+      .eq('verification_status', 'VERIFIED')
+      .single();
+    if (shopError || !shop) {
+      throw new NotFoundException('Verified shop not found');
+    }
+    if (!this.gateway.hasConnectedDaemon(shopId)) {
+      throw new ServiceUnavailableException(
+        'No authenticated print daemon is connected for this shop',
+      );
+    }
+
+    await this.supabaseService.ensurePrivateBucket('assets');
 
     // Validate that orders are IN_PRODUCTION and belong to this shop
     const { data: orders, error } = await supabase
@@ -36,14 +60,27 @@ export class PrintSpoolerService {
       );
     }
 
-    const validOrders = orders.filter((o) => o.state === 'IN_PRODUCTION');
+    const cutoff = Date.now() - 10 * 60 * 1000;
+    for (const [orderId, dispatchedAt] of this.recentlyDispatched) {
+      if (dispatchedAt < cutoff) this.recentlyDispatched.delete(orderId);
+    }
+    const orderRows = orders as unknown as PrintOrder[];
+    const validOrders = orderRows.filter(
+      (order) =>
+        order.state === 'IN_PRODUCTION' &&
+        !this.recentlyDispatched.has(order.id),
+    );
     if (validOrders.length === 0) {
       throw new NotFoundException(
         'No valid IN_PRODUCTION orders found for this batch',
       );
     }
 
-    const payload = [];
+    const payload: Array<{
+      id: string;
+      file_url: string;
+      print_color_mode: string;
+    }> = [];
 
     for (const order of validOrders) {
       const assetUrl =
@@ -55,9 +92,24 @@ export class PrintSpoolerService {
         continue;
       }
 
-      const signedUrl = this.urlSigner.signUrl(assetUrl, 3600); // 1 hour expiry
+      const signedUrl = await this.supabaseService.createSignedStorageUrl(
+        'assets',
+        assetUrl,
+        3600,
+      );
+      if (!signedUrl) {
+        this.logger.warn(
+          `Order ${order.id} asset could not be signed, skipping.`,
+        );
+        continue;
+      }
 
-      await this.printJobsRepo.createJob(order.id, shopId);
+      const claimed = await this.printJobsRepo.claimJob(order.id, shopId);
+      if (!claimed) {
+        this.logger.warn(`Order ${order.id} already has an active print job.`);
+        continue;
+      }
+      this.recentlyDispatched.set(order.id, Date.now());
 
       payload.push({
         id: order.id,
@@ -70,27 +122,25 @@ export class PrintSpoolerService {
       this.logger.log(
         `Emitting batch_execute for ${payload.length} orders to shop ${shopId} using printer ${printerName || 'default'}`,
       );
-      this.gateway.emitBatchExecute(shopId, { orders: payload, printerName });
+      const emitted = this.gateway.emitBatchExecute(shopId, {
+        orders: payload,
+        printerName,
+      });
+      if (!emitted) {
+        await Promise.all(
+          payload.map((order) =>
+            this.printJobsRepo.updateJobStatus(order.id, shopId, 'FAILED'),
+          ),
+        );
+        throw new ServiceUnavailableException(
+          'The print daemon disconnected before dispatch',
+        );
+      }
     }
 
     return {
       message: 'Batch spooling command emitted to daemon successfully.',
       spooledCount: payload.length,
     };
-  }
-
-  async handleDaemonAck(orderId: string, status: string) {
-    this.logger.log(
-      `Received daemon ack for order ${orderId} with status ${status}`,
-    );
-    await this.printJobsRepo.updateJobStatus(orderId, status);
-
-    if (status === 'SUCCESS' || status === 'COMPLETED') {
-      const supabase = this.supabaseService.getAdminClient();
-      await supabase
-        .from('orders')
-        .update({ state: 'PRINTED' }) // or COMPLETED based on your state machine
-        .eq('id', orderId);
-    }
   }
 }

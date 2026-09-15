@@ -1,29 +1,34 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import OpenAI from 'openai';
+import {
+  assertFileSignature,
+  DOCUMENT_MIME_TYPES,
+  IMAGE_MIME_TYPES,
+  secureObjectName,
+} from '../common/upload-security';
 
 @Injectable()
 export class ShopsService {
-  private openai: OpenAI;
+  private readonly openai: OpenAI | null;
 
   constructor(private supabaseService: SupabaseService) {
-    this.openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
+    const apiKey = process.env.OPENAI_API_KEY;
+    this.openai = apiKey ? new OpenAI({ apiKey }) : null;
   }
 
   async getVerifiedShops() {
     const { data, error } = await this.supabaseService
       .getAdminClient()
       .from('shops')
-      .select('*')
+      .select('id, name, status, verification_status, pricing_matrix')
       .eq('status', 'OPEN')
       .eq('verification_status', 'VERIFIED');
 
     if (error) {
       throw new InternalServerErrorException(error.message);
     }
-    return data;
+    return data || [];
   }
 
   async getShopById(shopId: string) {
@@ -37,7 +42,19 @@ export class ShopsService {
     if (error) {
       throw new InternalServerErrorException(error.message);
     }
-    return data;
+    return {
+      ...data,
+      business_permit_url: await this.supabaseService.createSignedStorageUrl(
+        'permits',
+        data.business_permit_url,
+        300,
+      ),
+      gcash_qr_url: await this.supabaseService.createSignedStorageUrl(
+        'gcash_qrs',
+        data.gcash_qr_url,
+        300,
+      ),
+    };
   }
 
   async updateShop(
@@ -72,67 +89,20 @@ export class ShopsService {
   }
 
   async ensurePermitsBucket() {
-    const supabase = this.supabaseService.getAdminClient();
-    const { data: buckets, error: listError } =
-      await supabase.storage.listBuckets();
-
-    if (listError) {
-      console.error('Error listing buckets:', listError);
-      throw new InternalServerErrorException(
-        `Failed to list buckets: ${listError.message}`,
-      );
-    }
-
-    if (!buckets?.find((b) => b.name === 'permits')) {
-      console.log("Bucket 'permits' not found, creating it...");
-      const { data, error: createError } = await supabase.storage.createBucket(
-        'permits',
-        { public: true },
-      );
-      if (createError) {
-        console.error('Error creating bucket:', createError);
-        throw new InternalServerErrorException(
-          `Failed to create permits bucket: ${createError.message}`,
-        );
-      }
-      console.log('Bucket created successfully:', data);
-    }
+    await this.supabaseService.ensurePrivateBucket('permits');
   }
 
   async ensureGcashQrsBucket() {
-    const supabase = this.supabaseService.getAdminClient();
-    const { data: buckets, error: listError } =
-      await supabase.storage.listBuckets();
-
-    if (listError) {
-      console.error('Error listing buckets:', listError);
-      throw new InternalServerErrorException(
-        `Failed to list buckets: ${listError.message}`,
-      );
-    }
-
-    if (!buckets?.find((b) => b.name === 'gcash_qrs')) {
-      console.log("Bucket 'gcash_qrs' not found, creating it...");
-      const { data, error: createError } = await supabase.storage.createBucket(
-        'gcash_qrs',
-        { public: true },
-      );
-      if (createError) {
-        console.error('Error creating bucket:', createError);
-        throw new InternalServerErrorException(
-          `Failed to create gcash_qrs bucket: ${createError.message}`,
-        );
-      }
-      console.log('Bucket gcash_qrs created successfully:', data);
-    }
+    await this.supabaseService.ensurePrivateBucket('gcash_qrs');
   }
 
   async verifyPermit(shopId: string, file: Express.Multer.File) {
+    assertFileSignature(file, DOCUMENT_MIME_TYPES);
     await this.ensurePermitsBucket();
     const supabase = this.supabaseService.getAdminClient();
 
-    const fileName = `${shopId}-${Date.now()}-${file.originalname}`;
-    const { data: uploadData, error: uploadError } = await supabase.storage
+    const fileName = secureObjectName(shopId, file.mimetype);
+    const { error: uploadError } = await supabase.storage
       .from('permits')
       .upload(fileName, file.buffer, {
         contentType: file.mimetype,
@@ -144,16 +114,24 @@ export class ShopsService {
       );
     }
 
-    const { data: urlData } = supabase.storage
-      .from('permits')
-      .getPublicUrl(fileName);
-
-    const publicUrl = urlData.publicUrl;
+    const reviewUrl = await this.supabaseService.createSignedStorageUrl(
+      'permits',
+      fileName,
+      600,
+    );
+    if (!reviewUrl) {
+      throw new InternalServerErrorException(
+        'Failed to prepare permit for review',
+      );
+    }
 
     let aiSuggestion = 'DENY'; // Default to DENY to enforce ACCEPT/DENY binary
     let aiReasoning = 'Awaiting analysis...';
 
     try {
+      if (!this.openai) {
+        throw new Error('OPENAI_API_KEY is not configured');
+      }
       const response = await this.openai.chat.completions.create({
         model: 'gpt-4o',
         response_format: { type: 'json_object' },
@@ -170,7 +148,7 @@ export class ShopsService {
               {
                 type: 'image_url',
                 image_url: {
-                  url: publicUrl,
+                  url: reviewUrl,
                 },
               },
             ],
@@ -198,7 +176,7 @@ export class ShopsService {
     const { data: updateData, error: updateError } = await supabase
       .from('shops')
       .update({
-        business_permit_url: publicUrl,
+        business_permit_url: fileName,
         verification_status: 'PENDING_REVIEW',
         ai_suggestion: aiSuggestion,
         ai_reasoning: aiReasoning,
@@ -213,15 +191,23 @@ export class ShopsService {
       );
     }
 
-    return updateData;
+    return {
+      ...updateData,
+      business_permit_url: await this.supabaseService.createSignedStorageUrl(
+        'permits',
+        fileName,
+        300,
+      ),
+    };
   }
 
   async uploadGcashQr(shopId: string, file: Express.Multer.File) {
+    assertFileSignature(file, IMAGE_MIME_TYPES);
     await this.ensureGcashQrsBucket();
     const supabase = this.supabaseService.getAdminClient();
 
-    const fileName = `${shopId}-${Date.now()}-${file.originalname}`;
-    const { data: uploadData, error: uploadError } = await supabase.storage
+    const fileName = secureObjectName(shopId, file.mimetype);
+    const { error: uploadError } = await supabase.storage
       .from('gcash_qrs')
       .upload(fileName, file.buffer, {
         contentType: file.mimetype,
@@ -233,16 +219,10 @@ export class ShopsService {
       );
     }
 
-    const { data: urlData } = supabase.storage
-      .from('gcash_qrs')
-      .getPublicUrl(fileName);
-
-    const publicUrl = urlData.publicUrl;
-
     const { data: updateData, error: updateError } = await supabase
       .from('shops')
       .update({
-        gcash_qr_url: publicUrl,
+        gcash_qr_url: fileName,
       })
       .eq('id', shopId)
       .select()
@@ -254,6 +234,13 @@ export class ShopsService {
       );
     }
 
-    return updateData;
+    return {
+      ...updateData,
+      gcash_qr_url: await this.supabaseService.createSignedStorageUrl(
+        'gcash_qrs',
+        fileName,
+        300,
+      ),
+    };
   }
 }
