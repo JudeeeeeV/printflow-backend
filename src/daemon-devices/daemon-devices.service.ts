@@ -171,6 +171,7 @@ export class DaemonDevicesService {
       .from('daemon_devices')
       .select(publicDeviceFields)
       .eq('shop_id', shopId)
+      .is('revoked_at', null)
       .order('created_at', { ascending: false });
     if (error) {
       throw new InternalServerErrorException('Failed to load printer agents');
@@ -270,22 +271,15 @@ export class DaemonDevicesService {
 
   private async revoke(deviceId: string, shopId?: string) {
     const supabase = this.supabaseService.getAdminClient();
-    let query = supabase
-      .from('daemon_devices')
-      .update({
-        revoked_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', deviceId)
-      .is('revoked_at', null);
+    let query = supabase.from('daemon_devices').delete().eq('id', deviceId);
     if (shopId) query = query.eq('shop_id', shopId);
     const { data, error } = await query.select('id').maybeSingle();
     if (error) {
-      throw new InternalServerErrorException('Failed to revoke printer agent');
+      throw new InternalServerErrorException('Failed to remove printer agent');
     }
-    if (!data) throw new NotFoundException('Active printer agent not found');
+    if (!data) throw new NotFoundException('Printer agent not found');
     this.connections.disconnect(deviceId);
-    return { message: 'Printer agent revoked successfully.' };
+    return { message: 'Printer agent removed successfully.' };
   }
 
   private async findDevice(deviceId: string, shopId: string) {

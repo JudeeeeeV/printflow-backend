@@ -1,5 +1,14 @@
 const path = require('node:path');
 const { createRequire } = require('node:module');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+
+const execFileAsync = promisify(execFile);
+const PRINTER_SCAN_COMMAND =
+  '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); ' +
+  'ConvertTo-Json -Compress -InputObject @(' +
+  'Get-CimInstance -ClassName Win32_Printer -Property Name | ' +
+  'Select-Object -ExpandProperty Name)';
 
 function loadPrinterLibrary() {
   try {
@@ -23,9 +32,26 @@ class PrinterService {
   }
 
   async scan() {
-    const result = await this.ptp.getPrinters();
-    this.printers = result
-      .map((printer) => printer.name)
+    const { stdout } = await execFileAsync(
+      'powershell.exe',
+      [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        PRINTER_SCAN_COMMAND,
+      ],
+      {
+        encoding: 'utf8',
+        maxBuffer: 1024 * 1024,
+        timeout: 30_000,
+        windowsHide: true,
+      },
+    );
+    const output = stdout.replace(/^\uFEFF/, '').trim();
+    const result = output ? JSON.parse(output) : [];
+    const printerNames = Array.isArray(result) ? result : [result];
+    this.printers = printerNames
       .filter((name) => typeof name === 'string' && name.length <= 200)
       .sort((a, b) => a.localeCompare(b));
     return [...this.printers];

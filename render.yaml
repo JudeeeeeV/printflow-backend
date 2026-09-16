@@ -27,7 +27,7 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: AGENT_WINDOWS_VERSION
-        value: 0.1.0
+        value: 0.1.4
       - key: AGENT_WINDOWS_DOWNLOAD_URL
         sync: false
       - key: AGENT_WINDOWS_STORAGE_PATH

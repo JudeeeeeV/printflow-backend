@@ -2,20 +2,31 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const AGENT_VERSION = '0.1.0';
 const appDataRoot =
   process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
 const dataDirectory = path.join(appDataRoot, 'PrintFlow Agent');
 const configPath = path.join(dataDirectory, 'agent-config.json');
+const releaseConfigPath = path.join(
+  path.dirname(process.execPath),
+  'release-config.json',
+);
 
-function readLocalConfig() {
+function readJson(filePath) {
   try {
-    return JSON.parse(
-      fs.readFileSync(configPath, 'utf8').replace(/^\uFEFF/, ''),
-    );
+    return JSON.parse(fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, ''));
   } catch {
     return {};
   }
+}
+
+const releaseConfig = readJson(releaseConfigPath);
+const AGENT_VERSION =
+  typeof releaseConfig.version === 'string' && releaseConfig.version
+    ? releaseConfig.version
+    : '0.1.4';
+
+function readLocalConfig() {
+  return readJson(configPath);
 }
 
 function backendUrl() {
@@ -23,6 +34,7 @@ function backendUrl() {
   const value =
     process.env.PRINTFLOW_BACKEND_URL ||
     localConfig.backendUrl ||
+    releaseConfig.backendUrl ||
     'http://localhost:3000';
   const parsed = new URL(String(value).replace(/\/+$/, ''));
   const isLocal =

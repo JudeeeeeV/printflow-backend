@@ -4,6 +4,8 @@ if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
     Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
 }
+$startupShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\PrintFlow Printer Agent.lnk'
+Remove-Item -LiteralPath $startupShortcut -Force -ErrorAction SilentlyContinue
 
 $agentData = Join-Path $env:APPDATA 'PrintFlow Agent'
 $startMenuDirectory = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\PrintFlow'

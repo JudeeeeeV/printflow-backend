@@ -7,6 +7,60 @@ const { backendUrl, AGENT_VERSION } = require('./config');
 const logger = require('./logger');
 
 let client;
+let registrationRecovery;
+
+async function loadCredentialsOrReset() {
+  try {
+    return await credentialStore.load();
+  } catch (error) {
+    logger.warn(`${error.message}; clearing the local registration`);
+    credentialStore.clear();
+    return null;
+  }
+}
+
+async function connectRegisteredAgent(url, apiClient, printerService) {
+  let credentials = await loadCredentialsOrReset();
+  if (!credentials) {
+    logger.info('No valid printer-agent registration found; opening setup');
+    await runSetup(apiClient, url);
+    credentials = await loadCredentialsOrReset();
+  }
+  if (!credentials) {
+    throw new Error('Printer-agent registration did not complete');
+  }
+
+  const nextClient = new AgentSocketClient(
+    url,
+    apiClient,
+    credentials,
+    printerService,
+    () => recoverRegistration(url, apiClient, printerService, nextClient),
+  );
+  client = nextClient;
+  await nextClient.start();
+}
+
+async function recoverRegistration(url, apiClient, printerService, source) {
+  if (source !== client) return;
+  if (registrationRecovery) return registrationRecovery;
+
+  registrationRecovery = (async () => {
+    source.stop();
+    credentialStore.clear();
+    logger.info('Removed invalid local credentials; opening setup again');
+    await connectRegisteredAgent(url, apiClient, printerService);
+    logger.info(`PrintFlow Printer Agent ${AGENT_VERSION} re-registered`);
+  })();
+
+  try {
+    await registrationRecovery;
+  } catch (error) {
+    logger.error(`Printer-agent re-registration failed: ${error.message}`);
+  } finally {
+    registrationRecovery = null;
+  }
+}
 
 async function main() {
   if (process.platform !== 'win32' && process.env.NODE_ENV !== 'development') {
@@ -21,17 +75,8 @@ async function main() {
   }
   const url = backendUrl();
   const apiClient = new AgentApiClient(url);
-  let credentials = await credentialStore.load();
-  if (!credentials) {
-    logger.info('No printer-agent registration found; opening one-time setup');
-    await runSetup(apiClient, url);
-    credentials = await credentialStore.load();
-  }
-  if (!credentials)
-    throw new Error('Printer-agent registration did not complete');
   const printerService = new PrinterService();
-  client = new AgentSocketClient(url, apiClient, credentials, printerService);
-  await client.start();
+  await connectRegisteredAgent(url, apiClient, printerService);
   logger.info(`PrintFlow Printer Agent ${AGENT_VERSION} started`);
 }
 

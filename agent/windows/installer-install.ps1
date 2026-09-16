@@ -19,6 +19,13 @@ if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
 }
 
+$existingAgentExecutable = Join-Path $installDirectory 'PrintFlowAgent.exe'
+Get-Process -Name 'PrintFlowAgent' -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -eq $existingAgentExecutable } |
+    Stop-Process -Force
+$startupShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\PrintFlow Printer Agent.lnk'
+Remove-Item -LiteralPath $startupShortcut -Force -ErrorAction SilentlyContinue
+
 if (Test-Path -LiteralPath $installDirectory) {
     Remove-Item -LiteralPath $installDirectory -Recurse -Force
 }
@@ -43,7 +50,7 @@ $shortcut.Save()
 
 Add-Type -AssemblyName PresentationFramework
 [System.Windows.MessageBox]::Show(
-    'PrintFlow Printer Agent was installed. Your browser will open for the one-time shop sign-in.',
+    'PrintFlow Printer Agent was installed and started. Your browser should open for the one-time shop sign-in.',
     'PrintFlow Printer Agent',
     'OK',
     'Information'

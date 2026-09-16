@@ -4,11 +4,18 @@ const { JobProcessor } = require('./job-processor');
 const logger = require('./logger');
 
 class AgentSocketClient {
-  constructor(backendUrl, apiClient, credentials, printerService) {
+  constructor(
+    backendUrl,
+    apiClient,
+    credentials,
+    printerService,
+    onCredentialsRejected,
+  ) {
     this.backendUrl = backendUrl;
     this.apiClient = apiClient;
     this.credentials = credentials;
     this.printerService = printerService;
+    this.onCredentialsRejected = onCredentialsRejected;
     this.socket = null;
     this.stopped = false;
     this.reconnectAttempt = 0;
@@ -37,6 +44,14 @@ class AgentSocketClient {
       const token = await this.apiClient.exchangeToken(this.credentials);
       this.createSocket(token.accessToken, token.shopId);
     } catch (error) {
+      if (error.status === 401) {
+        logger.warn(
+          'Printer-agent registration is no longer valid; registration is required again',
+        );
+        this.stop();
+        await this.onCredentialsRejected?.();
+        return;
+      }
       logger.warn(`Agent authentication is unavailable: ${error.message}`);
       this.scheduleReconnect();
     }

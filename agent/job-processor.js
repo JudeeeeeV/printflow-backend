@@ -3,6 +3,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const fetch = require('node-fetch');
+const { AGENT_VERSION } = require('./config');
 const logger = require('./logger');
 
 const MAX_DOCUMENT_BYTES = 50 * 1024 * 1024;
@@ -66,7 +67,7 @@ class JobProcessor {
       this.report(order.id, 'DOWNLOADING');
       const response = await fetch(order.file_url, {
         signal: AbortSignal.timeout(120_000),
-        headers: { 'User-Agent': 'PrintFlow-Agent/0.1.0' },
+        headers: { 'User-Agent': `PrintFlow-Agent/${AGENT_VERSION}` },
       });
       if (!response.ok)
         throw new Error(`Document download failed (${response.status})`);

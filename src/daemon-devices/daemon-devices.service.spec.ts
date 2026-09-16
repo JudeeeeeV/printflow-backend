@@ -20,10 +20,11 @@ const device = {
 
 function queryReturning(result: unknown) {
   const chain: any = {};
-  for (const method of ['select', 'eq', 'is', 'update']) {
+  for (const method of ['select', 'eq', 'is', 'update', 'delete']) {
     chain[method] = jest.fn(() => chain);
   }
   chain.single = jest.fn(async () => result);
+  chain.maybeSingle = jest.fn(async () => result);
   return chain;
 }
 
@@ -102,5 +103,28 @@ describe('DaemonDevicesService', () => {
       }),
     ).rejects.toBeInstanceOf(UnauthorizedException);
     expect(jwtService.signAsync).not.toHaveBeenCalled();
+  });
+
+  it('deletes a device and disconnects it when a shop revokes access', async () => {
+    const deleteQuery = queryReturning({
+      data: { id: device.id },
+      error: null,
+    });
+    const adminClient = { from: jest.fn(() => deleteQuery) };
+    const connections = new DeviceConnectionRegistry();
+    const disconnect = jest.spyOn(connections, 'disconnect');
+    const service = new DaemonDevicesService(
+      { getAdminClient: () => adminClient } as any,
+      {} as any,
+      connections,
+    );
+
+    await expect(
+      service.revokeForShop(device.id, device.shop_id, 'MANAGER'),
+    ).resolves.toEqual({ message: 'Printer agent removed successfully.' });
+    expect(deleteQuery.delete).toHaveBeenCalled();
+    expect(deleteQuery.eq).toHaveBeenCalledWith('id', device.id);
+    expect(deleteQuery.eq).toHaveBeenCalledWith('shop_id', device.shop_id);
+    expect(disconnect).toHaveBeenCalledWith(device.id);
   });
 });

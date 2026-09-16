@@ -19,27 +19,19 @@ New-Item -ItemType Directory -Path $agentData -Force | Out-Null
     ConvertTo-Json |
     Set-Content -LiteralPath (Join-Path $agentData 'agent-config.json') -Encoding UTF8
 
-$taskName = 'PrintFlow Printer Agent'
-$action = New-ScheduledTaskAction -Execute $resolvedExecutable
-$currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
-$settings = New-ScheduledTaskSettingsSet `
-    -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries `
-    -RestartCount 10 `
-    -RestartInterval (New-TimeSpan -Minutes 1) `
-    -ExecutionTimeLimit ([TimeSpan]::Zero) `
-    -MultipleInstances IgnoreNew
-$principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited
+$startupDirectory = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup'
+New-Item -ItemType Directory -Path $startupDirectory -Force | Out-Null
+$startupShortcut = Join-Path $startupDirectory 'PrintFlow Printer Agent.lnk'
+$shell = New-Object -ComObject WScript.Shell
+$shortcut = $shell.CreateShortcut($startupShortcut)
+$shortcut.TargetPath = $resolvedExecutable
+$shortcut.WorkingDirectory = Split-Path -Parent $resolvedExecutable
+$shortcut.Description = 'Starts the PrintFlow Printer Agent for this Windows account.'
+$shortcut.Save()
 
-Register-ScheduledTask `
-    -TaskName $taskName `
-    -Action $action `
-    -Trigger $trigger `
-    -Settings $settings `
-    -Principal $principal `
-    -Description 'Starts the PrintFlow Printer Agent for the current Windows user.' `
-    -Force | Out-Null
+if (-not (Test-Path -LiteralPath $startupShortcut -PathType Leaf)) {
+    throw 'The PrintFlow Printer Agent startup shortcut could not be created.'
+}
 
-Start-ScheduledTask -TaskName $taskName
+Start-Process -FilePath $resolvedExecutable -WorkingDirectory (Split-Path -Parent $resolvedExecutable)
 Write-Output 'PrintFlow Printer Agent startup registration completed.'

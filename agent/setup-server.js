@@ -31,16 +31,16 @@ function setupHtml(token, backendUrl) {
   <p>Sign in once with a verified print-shop account. Your password is used only for this registration and is not stored.</p>
   <div class="server">Server: ${escapeHtml(backendUrl)}</div>
   <form id="form">
-    <label for="email">Shop email</label><input id="email" type="email" autocomplete="username" required>
-    <label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required>
-    <label for="name">Computer name</label><input id="name" value="${escapeHtml(os.hostname())}" maxlength="120" required>
+    <label for="email">Shop email</label><input id="email" name="email" type="email" autocomplete="username" required>
+    <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required>
+    <label for="device-name">Computer name</label><input id="device-name" name="deviceName" value="${escapeHtml(os.hostname())}" maxlength="120" required>
     <button id="submit" type="submit">Connect Printer Agent</button>
     <div id="status" class="status" aria-live="polite"></div>
   </form>
   <script>
-    const form=document.getElementById('form'),button=document.getElementById('submit'),status=document.getElementById('status');
+    const form=document.getElementById('form'),emailInput=document.getElementById('email'),passwordInput=document.getElementById('password'),deviceNameInput=document.getElementById('device-name'),button=document.getElementById('submit'),status=document.getElementById('status');
     form.addEventListener('submit',async(e)=>{e.preventDefault();button.disabled=true;status.className='status';status.textContent='Registering this computer...';
-      try{const response=await fetch('/register?token=${token}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.value,password:password.value,deviceName:name.value})});const data=await response.json();if(!response.ok)throw new Error(data.message||'Registration failed');password.value='';status.className='status success';status.textContent='Connected successfully. You can close this window.';button.textContent='Connected';}
+      try{const response=await fetch('/register?token=${token}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:emailInput.value.trim(),password:passwordInput.value,deviceName:deviceNameInput.value.trim()})});const data=await response.json();if(!response.ok)throw new Error(data.message||'Registration failed');passwordInput.value='';status.className='status success';status.textContent='Connected successfully. You can close this window.';button.textContent='Connected';}
       catch(error){status.className='status error';status.textContent=error.message;button.disabled=false;}}
     );
   </script>
@@ -49,15 +49,82 @@ function setupHtml(token, backendUrl) {
 
 function openBrowser(url) {
   if (process.platform === 'win32') {
-    const child = spawn('cmd.exe', ['/d', '/s', '/c', 'start', '""', url], {
+    return new Promise((resolve, reject) => {
+      const child = spawn(
+        'rundll32.exe',
+        ['url.dll,FileProtocolHandler', url],
+        {
+          detached: true,
+          windowsHide: true,
+          stdio: 'ignore',
+        },
+      );
+      child.once('error', reject);
+      child.once('spawn', () => {
+        child.unref();
+        resolve();
+      });
+    });
+  }
+  return Promise.reject(
+    new Error('Automatic setup is currently supported only on Windows.'),
+  );
+}
+
+function showSetupLaunchError(url, error) {
+  if (process.platform !== 'win32') return;
+  const message = [
+    'PrintFlow could not open your browser automatically.',
+    '',
+    'Copy this address into your browser within 10 minutes:',
+    url,
+    '',
+    `Reason: ${error.message}`,
+  ].join('\n');
+  const script = [
+    'Add-Type -AssemblyName PresentationFramework',
+    `[System.Windows.MessageBox]::Show($env:PRINTFLOW_SETUP_ERROR, 'PrintFlow Printer Agent', 'OK', 'Warning') | Out-Null`,
+  ].join('; ');
+  const child = spawn(
+    'powershell.exe',
+    ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+    {
       detached: true,
       windowsHide: true,
       stdio: 'ignore',
+      env: { ...process.env, PRINTFLOW_SETUP_ERROR: message },
+    },
+  );
+  child.on('error', () => {});
+  child.unref();
+}
+
+function openBrowserFallback(url) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      'powershell.exe',
+      [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-WindowStyle',
+        'Hidden',
+        '-Command',
+        'Start-Process -FilePath $env:PRINTFLOW_SETUP_URL',
+      ],
+      {
+        detached: true,
+        windowsHide: true,
+        stdio: 'ignore',
+        env: { ...process.env, PRINTFLOW_SETUP_URL: url },
+      },
+    );
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
     });
-    child.unref();
-    return;
-  }
-  throw new Error('Automatic setup is currently supported only on Windows.');
+  });
 }
 
 function readJson(request) {
@@ -86,6 +153,7 @@ function runSetup(apiClient, backendUrl) {
   return new Promise((resolve, reject) => {
     const token = randomBytes(32).toString('base64url');
     let completed = false;
+    let setupPageOpened = false;
     const server = http.createServer(async (request, response) => {
       const requestUrl = new URL(request.url, 'http://127.0.0.1');
       response.setHeader('Cache-Control', 'no-store');
@@ -95,6 +163,7 @@ function runSetup(apiClient, backendUrl) {
         requestUrl.pathname === '/' &&
         requestUrl.searchParams.get('token') === token
       ) {
+        setupPageOpened = true;
         response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         response.end(setupHtml(token, backendUrl));
         return;
@@ -145,15 +214,33 @@ function runSetup(apiClient, backendUrl) {
     });
 
     server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
+    server.listen(0, '127.0.0.1', async () => {
       const address = server.address();
       const url = `http://127.0.0.1:${address.port}/?token=${token}`;
       try {
-        openBrowser(url);
+        await openBrowser(url);
       } catch (error) {
-        server.close();
-        reject(error);
+        showSetupLaunchError(url, error);
+        return;
       }
+
+      setTimeout(async () => {
+        if (setupPageOpened || completed) return;
+        try {
+          await openBrowserFallback(url);
+        } catch (error) {
+          showSetupLaunchError(url, error);
+          return;
+        }
+        setTimeout(() => {
+          if (!setupPageOpened && !completed) {
+            showSetupLaunchError(
+              url,
+              new Error('Windows did not open the registration page'),
+            );
+          }
+        }, 5_000).unref();
+      }, 3_000).unref();
     });
     setTimeout(
       () => {
