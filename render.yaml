@@ -16,9 +16,23 @@ services:
         sync: false
       - key: JWT_SECRET
         generateValue: true
+      - key: AGENT_JWT_SECRET
+        generateValue: true
+      - key: ALLOW_LEGACY_DAEMON_AUTH
+        value: false
       - key: FRONTEND_URL
         sync: false
       - key: ADMIN_URL
         sync: false
       - key: OPENAI_API_KEY
+        sync: false
+      - key: AGENT_WINDOWS_VERSION
+        value: 0.1.0
+      - key: AGENT_WINDOWS_DOWNLOAD_URL
+        sync: false
+      - key: AGENT_WINDOWS_STORAGE_PATH
+        sync: false
+      - key: AGENT_WINDOWS_SHA256
+        sync: false
+      - key: AGENT_WINDOWS_PUBLISHED_AT
         sync: false

@@ -50,7 +50,13 @@ export class SupabaseService implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
-    for (const bucket of ['assets', 'receipts', 'permits', 'gcash_qrs']) {
+    for (const bucket of [
+      'assets',
+      'receipts',
+      'permits',
+      'gcash_qrs',
+      'agent-releases',
+    ]) {
       await this.ensurePrivateBucket(bucket);
     }
   }

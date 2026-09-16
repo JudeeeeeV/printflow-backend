@@ -14,6 +14,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { createHash } from 'node:crypto';
+import { DaemonDevicesModule } from './daemon-devices/daemon-devices.module';
 
 @Module({
   imports: [
@@ -26,7 +27,7 @@ import { createHash } from 'node:crypto';
           'JWT_SECRET',
         ];
         if (config.NODE_ENV === 'production') {
-          required.push('FRONTEND_URL', 'ADMIN_URL');
+          required.push('FRONTEND_URL', 'ADMIN_URL', 'AGENT_JWT_SECRET');
         }
         const missing = required.filter((key) => !config[key]);
         if (missing.length > 0) {
@@ -37,7 +38,20 @@ import { createHash } from 'node:crypto';
         if (String(config.JWT_SECRET).length < 32) {
           throw new Error('JWT_SECRET must contain at least 32 characters');
         }
-        for (const key of ['SUPABASE_URL', 'FRONTEND_URL', 'ADMIN_URL']) {
+        if (
+          config.AGENT_JWT_SECRET &&
+          String(config.AGENT_JWT_SECRET).length < 32
+        ) {
+          throw new Error(
+            'AGENT_JWT_SECRET must contain at least 32 characters',
+          );
+        }
+        for (const key of [
+          'SUPABASE_URL',
+          'FRONTEND_URL',
+          'ADMIN_URL',
+          'AGENT_WINDOWS_DOWNLOAD_URL',
+        ]) {
           if (!config[key]) continue;
           let parsed: URL;
           try {
@@ -81,6 +95,7 @@ import { createHash } from 'node:crypto';
     ShopsModule,
     OrdersModule,
     AdminModule,
+    DaemonDevicesModule,
     EdgeModule,
     AnalyticsModule,
   ],

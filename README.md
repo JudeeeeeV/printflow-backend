@@ -105,6 +105,46 @@ npm run daemon
 
 3. Sign in with a verified print-shop account. The launcher passes only that shop's short-lived access token to the daemon; it never uses the Supabase service-role key.
 
+### Windows Printer Agent
+
+The production replacement for the terminal daemon lives in `agent/`. It uses a
+one-time shop login to register the Windows computer, protects the resulting
+device credential with Windows DPAPI, starts at user login, refreshes short-lived
+agent tokens, and reconnects to the Socket.IO gateway automatically.
+
+Apply `supabase/migrations/20260917_daemon_devices.sql` before enabling agent
+registration. Production also requires a stable `AGENT_JWT_SECRET` containing at
+least 32 characters.
+
+Run the agent from source during development:
+
+```bash
+npm run agent
+```
+
+Build the Windows installer:
+
+```bash
+npm run agent:build:windows
+```
+
+The generated installer and checksum metadata are written to `agent/release/`.
+Build output is intentionally ignored by Git. The build uses a bundled Node
+single-executable agent and a per-user Windows installer, so a shop computer does
+not need Node.js or the source repository.
+
+To publish the current installer to the private Supabase `agent-releases` bucket:
+
+```bash
+npm run agent:publish:windows
+```
+
+The publish command prints the `AGENT_WINDOWS_STORAGE_PATH`, version, checksum,
+and publication-time values that must be copied into the deployed backend's
+environment. The clerk-side **Printer Agent** page requests a short-lived signed
+download URL from the backend. `AGENT_WINDOWS_DOWNLOAD_URL` can instead point to
+an externally hosted installer.
+
 ---
 
 ## 👥 Contributors

@@ -77,4 +77,22 @@ export class AdminController {
   async upholdRejection(@Param('id') orderId: string) {
     return this.adminService.upholdRejection(orderId);
   }
+
+  @Get('daemon-devices')
+  @UseGuards(AdminAuthGuard)
+  async getDaemonDevices() {
+    return this.adminService.getDaemonDevices();
+  }
+
+  @Post('daemon-devices/:id/revoke')
+  @UseGuards(AdminAuthGuard)
+  async revokeDaemonDevice(@Param('id') deviceId: string) {
+    return this.adminService.revokeDaemonDevice(deviceId);
+  }
+
+  @Post('daemon-devices/:id/rescan')
+  @UseGuards(AdminAuthGuard)
+  async rescanDaemonDevice(@Param('id') deviceId: string) {
+    return this.adminService.rescanDaemonDevice(deviceId);
+  }
 }

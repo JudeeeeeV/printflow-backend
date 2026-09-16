@@ -9,13 +9,27 @@ import * as bcrypt from 'bcrypt';
 import * as speakeasy from 'speakeasy';
 import * as qrcode from 'qrcode';
 import { JwtService } from '@nestjs/jwt';
+import { DaemonDevicesService } from '../daemon-devices/daemon-devices.service';
 
 @Injectable()
 export class AdminService {
   constructor(
     private supabaseService: SupabaseService,
     private jwtService: JwtService,
+    private daemonDevicesService: DaemonDevicesService,
   ) {}
+
+  getDaemonDevices() {
+    return this.daemonDevicesService.listAll();
+  }
+
+  revokeDaemonDevice(deviceId: string) {
+    return this.daemonDevicesService.revokeAsAdmin(deviceId);
+  }
+
+  rescanDaemonDevice(deviceId: string) {
+    return this.daemonDevicesService.requestPrinterRescanAsAdmin(deviceId);
+  }
 
   async login(email: string, passwordPlain: string) {
     const supabase = this.supabaseService.getAdminClient();

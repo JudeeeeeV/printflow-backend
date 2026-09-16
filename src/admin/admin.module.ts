@@ -4,6 +4,7 @@ import { AdminService } from './admin.service';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { DaemonDevicesModule } from '../daemon-devices/daemon-devices.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
         };
       },
     }),
+    DaemonDevicesModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],
