@@ -26,7 +26,7 @@ export class AgentReleasesController {
         900,
       );
     }
-    const version = this.config.get<string>('AGENT_WINDOWS_VERSION') || '0.1.4';
+    const version = this.config.get<string>('AGENT_WINDOWS_VERSION') || '0.1.5';
     return {
       available: Boolean(downloadUrl),
       platform: 'windows',

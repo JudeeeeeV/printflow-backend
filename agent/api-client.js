@@ -41,18 +41,10 @@ class AgentApiClient {
     }
   }
 
-  login(email, password) {
-    return this.request('/auth/login', {
+  bootstrap(email, password, deviceName) {
+    return this.request('/daemon-devices/bootstrap', {
       method: 'POST',
-      body: { email, password },
-    });
-  }
-
-  registerDevice(token, deviceName) {
-    return this.request('/daemon-devices/register', {
-      method: 'POST',
-      token,
-      body: { deviceName, agentVersion: AGENT_VERSION },
+      body: { email, password, deviceName, agentVersion: AGENT_VERSION },
     });
   }
 

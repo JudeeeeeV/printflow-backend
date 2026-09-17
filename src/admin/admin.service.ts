@@ -10,6 +10,8 @@ import * as speakeasy from 'speakeasy';
 import * as qrcode from 'qrcode';
 import { JwtService } from '@nestjs/jwt';
 import { DaemonDevicesService } from '../daemon-devices/daemon-devices.service';
+import { TotpEncryptionService } from './totp-encryption.service';
+import { createHash, randomUUID } from 'node:crypto';
 
 @Injectable()
 export class AdminService {
@@ -17,6 +19,7 @@ export class AdminService {
     private supabaseService: SupabaseService,
     private jwtService: JwtService,
     private daemonDevicesService: DaemonDevicesService,
+    private totpEncryption: TotpEncryptionService,
   ) {}
 
   getDaemonDevices() {
@@ -63,10 +66,15 @@ export class AdminService {
       const otpauth = secret.otpauth_url;
       const qrCodeUrl = await qrcode.toDataURL(otpauth!);
 
-      // Save secret temporarily in DB
+      // Store the seed with application-level authenticated encryption.
       const { error: secretError } = await supabase
         .from('admins')
-        .update({ two_factor_secret: secret.base32 })
+        .update({
+          two_factor_secret: null,
+          two_factor_secret_encrypted: this.totpEncryption.encrypt(
+            secret.base32,
+          ),
+        })
         .eq('id', admin.id);
       if (secretError) {
         throw new InternalServerErrorException('Failed to initialize 2FA');
@@ -94,12 +102,13 @@ export class AdminService {
       .eq('id', adminId)
       .single();
 
-    if (!admin || !admin.two_factor_secret) {
+    const secret = admin ? this.readTotpSecret(admin) : null;
+    if (!admin || !secret) {
       throw new BadRequestException('Invalid state');
     }
 
     const isValid = speakeasy.totp.verify({
-      secret: admin.two_factor_secret,
+      secret,
       encoding: 'base32',
       token,
       window: 1,
@@ -118,12 +127,7 @@ export class AdminService {
     }
 
     // Issue full token
-    const accessToken = this.jwtService.sign({
-      sub: admin.id,
-      email: admin.email,
-      role: 'ADMIN',
-      tokenType: 'admin-access',
-    });
+    const accessToken = await this.issueAccessToken(admin.id, admin.email);
     return { access_token: accessToken };
   }
 
@@ -135,12 +139,13 @@ export class AdminService {
       .eq('id', adminId)
       .single();
 
-    if (!admin || !admin.two_factor_secret || !admin.is_2fa_enabled) {
+    const secret = admin ? this.readTotpSecret(admin) : null;
+    if (!admin || !secret || !admin.is_2fa_enabled) {
       throw new BadRequestException('Invalid state');
     }
 
     const isValid = speakeasy.totp.verify({
-      secret: admin.two_factor_secret,
+      secret,
       encoding: 'base32',
       token,
       window: 1,
@@ -149,14 +154,76 @@ export class AdminService {
       throw new UnauthorizedException('Invalid TOTP token');
     }
 
+    if (!admin.two_factor_secret_encrypted && admin.two_factor_secret) {
+      const { error: migrationError } = await supabase
+        .from('admins')
+        .update({
+          two_factor_secret: null,
+          two_factor_secret_encrypted: this.totpEncryption.encrypt(secret),
+        })
+        .eq('id', admin.id);
+      if (migrationError) {
+        throw new InternalServerErrorException('Failed to secure 2FA settings');
+      }
+    }
+
     // Issue full token
-    const accessToken = this.jwtService.sign({
-      sub: admin.id,
-      email: admin.email,
+    const accessToken = await this.issueAccessToken(admin.id, admin.email);
+    return { access_token: accessToken };
+  }
+
+  private readTotpSecret(admin: {
+    two_factor_secret?: string | null;
+    two_factor_secret_encrypted?: string | null;
+  }): string | null {
+    if (admin.two_factor_secret_encrypted) {
+      try {
+        return this.totpEncryption.decrypt(admin.two_factor_secret_encrypted);
+      } catch {
+        throw new InternalServerErrorException('Unable to read 2FA settings');
+      }
+    }
+    return admin.two_factor_secret || null;
+  }
+
+  async revokeSession(adminId: string, tokenId: string): Promise<void> {
+    const tokenIdHash = createHash('sha256')
+      .update(tokenId, 'utf8')
+      .digest('hex');
+    await this.supabaseService
+      .getAdminClient()
+      .from('admin_sessions')
+      .update({ revoked_at: new Date().toISOString() })
+      .eq('admin_id', adminId)
+      .eq('token_id_hash', tokenIdHash);
+  }
+
+  private async issueAccessToken(
+    adminId: string,
+    email: string,
+  ): Promise<string> {
+    const tokenId = randomUUID();
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1_000).toISOString();
+    const { error } = await this.supabaseService
+      .getAdminClient()
+      .from('admin_sessions')
+      .insert({
+        admin_id: adminId,
+        token_id_hash: createHash('sha256')
+          .update(tokenId, 'utf8')
+          .digest('hex'),
+        expires_at: expiresAt,
+      });
+    if (error) {
+      throw new InternalServerErrorException('Failed to create admin session');
+    }
+    return this.jwtService.sign({
+      sub: adminId,
+      email,
       role: 'ADMIN',
       tokenType: 'admin-access',
+      jti: tokenId,
     });
-    return { access_token: accessToken };
   }
 
   async getPendingShops() {

@@ -18,8 +18,10 @@ RUN apt-get update \
 
 WORKDIR /app
 ENV NODE_ENV=production
-COPY package.json package-lock.json ./
+COPY --chown=node:node package.json package-lock.json ./
 RUN npm ci --omit=dev
-COPY --from=build /app/dist ./dist
+COPY --chown=node:node --from=build /app/dist ./dist
+
+USER node
 
 CMD ["npm", "run", "start:prod"]

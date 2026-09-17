@@ -1,5 +1,7 @@
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config({ path: './.env' });
+const { assertMaintenanceAccess } = require('./scripts/maintenance-guard');
+if (assertMaintenanceAccess('admin table creation', { write: true }).dryRun) process.exit(0);
 
 async function createAdminsTable() {
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);

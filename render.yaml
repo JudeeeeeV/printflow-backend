@@ -15,6 +15,8 @@ services:
         generateValue: true
       - key: AGENT_JWT_SECRET
         generateValue: true
+      - key: TOTP_ENCRYPTION_KEY
+        generateValue: true
       - key: ALLOW_LEGACY_DAEMON_AUTH
         value: false
       - key: FRONTEND_URL
@@ -23,8 +25,10 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
+      - key: ENABLE_AI_PERMIT_REVIEW
+        value: false
       - key: AGENT_WINDOWS_VERSION
-        value: 0.1.4
+        value: 0.1.5
       - key: AGENT_WINDOWS_DOWNLOAD_URL
         sync: false
       - key: AGENT_WINDOWS_STORAGE_PATH

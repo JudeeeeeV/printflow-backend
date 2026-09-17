@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   Post,
@@ -15,6 +16,8 @@ import { Roles } from '../iam/decorators/roles.decorator';
 import { DaemonDevicesService } from './daemon-devices.service';
 import { RegisterDaemonDeviceDto } from './dto/register-daemon-device.dto';
 import { ExchangeDaemonTokenDto } from './dto/exchange-daemon-token.dto';
+import { BootstrapDaemonDeviceDto } from './dto/bootstrap-daemon-device.dto';
+import { AuthService } from '../auth/auth.service';
 
 interface ShopRequest extends Request {
   user: { id: string; role: string };
@@ -22,7 +25,32 @@ interface ShopRequest extends Request {
 
 @Controller('daemon-devices')
 export class DaemonDevicesController {
-  constructor(private readonly devices: DaemonDevicesService) {}
+  constructor(
+    private readonly devices: DaemonDevicesService,
+    private readonly auth: AuthService,
+  ) {}
+
+  @Post('bootstrap')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  async bootstrap(@Body() dto: BootstrapDaemonDeviceDto) {
+    const session = await this.auth.login({
+      email: dto.email,
+      password: dto.password,
+    });
+    try {
+      if (session.user.roleTag !== 'Print Shop') {
+        throw new ForbiddenException(
+          'A verified print-shop account is required',
+        );
+      }
+      return await this.devices.register(session.user.id, 'CLERK', {
+        deviceName: dto.deviceName,
+        agentVersion: dto.agentVersion,
+      });
+    } finally {
+      await this.auth.logout(session.accessToken);
+    }
+  }
 
   @Post('token')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })

@@ -1,5 +1,7 @@
 require('dotenv').config();
 const { createClient } = require('@supabase/supabase-js');
+const { assertMaintenanceAccess } = require('./scripts/maintenance-guard');
+if (assertMaintenanceAccess('bucket test', { write: true }).dryRun) process.exit(0);
 
 const supabase = createClient(
   process.env.SUPABASE_URL,

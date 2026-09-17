@@ -2,6 +2,8 @@ const { createClient } = require('@supabase/supabase-js');
 const bcrypt = require('bcrypt');
 
 require('dotenv').config({ path: './.env' });
+const { assertMaintenanceAccess } = require('./scripts/maintenance-guard');
+if (assertMaintenanceAccess('administrator seed', { write: true }).dryRun) process.exit(0);
 
 async function seedAdmin() {
   const supabase = createClient(

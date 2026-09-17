@@ -24,6 +24,14 @@ if (fs.existsSync(envPath)) {
   }
 }
 
+const { assertMaintenanceAccess } = require('./maintenance-guard');
+if (
+  assertMaintenanceAccess('printer-agent release publication', { write: true })
+    .dryRun
+) {
+  process.exit(0);
+}
+
 async function main() {
   const supabaseUrl = process.env.SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;

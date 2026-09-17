@@ -1,5 +1,7 @@
 require('dotenv').config();
 const { createClient } = require('@supabase/supabase-js');
+const { assertMaintenanceAccess } = require('./scripts/maintenance-guard');
+assertMaintenanceAccess('draft inspection');
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 

@@ -1,5 +1,7 @@
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
+const { assertMaintenanceAccess } = require('./maintenance-guard');
+if (assertMaintenanceAccess('order state test', { write: true }).dryRun) process.exit(0);
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 

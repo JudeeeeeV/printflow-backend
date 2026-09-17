@@ -6,6 +6,11 @@ import {
 } from '@nestjs/common';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { Request } from 'express';
+import {
+  bearerToken,
+  readCookie,
+  USER_ACCESS_COOKIE,
+} from '../../auth/auth-cookies';
 
 @Injectable()
 export class SupabaseAuthGuard implements CanActivate {
@@ -13,15 +18,15 @@ export class SupabaseAuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
-    const authHeader = request.headers.authorization;
+    const token =
+      bearerToken(request) || readCookie(request, USER_ACCESS_COOKIE);
 
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (!token) {
       throw new UnauthorizedException(
         'Missing or invalid Authorization header',
       );
     }
 
-    const token = authHeader.split(' ')[1];
     const supabase = this.supabaseService.getAdminClient();
 
     // Verify token with Supabase Auth

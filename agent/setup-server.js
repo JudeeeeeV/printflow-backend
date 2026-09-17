@@ -179,15 +179,9 @@ function runSetup(apiClient, backendUrl) {
           if (!body.email || !body.password || !body.deviceName) {
             throw new Error('Email, password, and computer name are required');
           }
-          const login = await apiClient.login(
+          const registration = await apiClient.bootstrap(
             String(body.email).trim(),
             String(body.password),
-          );
-          if (login.user?.roleTag !== 'Print Shop' || !login.token) {
-            throw new Error('A verified print-shop account is required');
-          }
-          const registration = await apiClient.registerDevice(
-            login.token,
             String(body.deviceName).trim(),
           );
           await credentialStore.save({

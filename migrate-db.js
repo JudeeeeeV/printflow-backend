@@ -1,5 +1,7 @@
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
+const { assertMaintenanceAccess } = require('./scripts/maintenance-guard');
+if (assertMaintenanceAccess('legacy database migration', { write: true }).dryRun) process.exit(0);
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 

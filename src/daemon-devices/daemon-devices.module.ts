@@ -6,10 +6,12 @@ import { DaemonDevicesController } from './daemon-devices.controller';
 import { DaemonDevicesService } from './daemon-devices.service';
 import { DeviceConnectionRegistry } from './device-connection.registry';
 import { AgentReleasesController } from './agent-releases.controller';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
   imports: [
     SupabaseModule,
+    AuthModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

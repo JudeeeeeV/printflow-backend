@@ -1,6 +1,9 @@
 // Read-only access check; prints neither credentials nor table contents.
 // Run from printflow-backend: node --env-file=.env scripts/check-rls-access.cjs
 const { createClient } = require('@supabase/supabase-js');
+const { assertMaintenanceAccess } = require('./maintenance-guard');
+
+assertMaintenanceAccess('RLS access check');
 
 async function main() {
   const url = process.env.SUPABASE_URL;

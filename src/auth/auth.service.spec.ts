@@ -11,7 +11,14 @@ describe('AuthService', () => {
     const authClient = {
       auth: {
         signInWithPassword: jest.fn().mockResolvedValue({
-          data: { user, session: { access_token: 'user-token' } },
+          data: {
+            user,
+            session: {
+              access_token: 'user-token',
+              refresh_token: 'refresh-token',
+              expires_in: 3600,
+            },
+          },
           error: null,
         }),
       },
@@ -35,7 +42,9 @@ describe('AuthService', () => {
     await expect(
       service.login({ email: user.email, password: 'GoodPassword1!' }),
     ).resolves.toEqual({
-      token: 'user-token',
+      accessToken: 'user-token',
+      refreshToken: 'refresh-token',
+      expiresIn: 3600,
       user: { id: user.id, email: user.email, roleTag: 'Student' },
     });
     expect(profileClient.from).toHaveBeenCalledWith('users');

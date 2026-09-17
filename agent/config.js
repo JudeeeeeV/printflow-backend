@@ -23,7 +23,7 @@ const releaseConfig = readJson(releaseConfigPath);
 const AGENT_VERSION =
   typeof releaseConfig.version === 'string' && releaseConfig.version
     ? releaseConfig.version
-    : '0.1.4';
+    : '0.1.5';
 
 function readLocalConfig() {
   return readJson(configPath);

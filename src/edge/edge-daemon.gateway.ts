@@ -13,6 +13,7 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { PrintJobsRepository } from './repositories/print-jobs.repository';
 import { DaemonDevicesService } from '../daemon-devices/daemon-devices.service';
 import { DeviceConnectionRegistry } from '../daemon-devices/device-connection.registry';
+import { readCookie, USER_ACCESS_COOKIE } from '../auth/auth-cookies';
 
 type ConnectionRole = 'daemon' | 'clerk';
 type UserRole = 'CLERK' | 'MANAGER';
@@ -42,7 +43,10 @@ const websocketOrigin = (
   else callback(new Error('Origin is not allowed'), false);
 };
 
-@WebSocketGateway({ cors: { origin: websocketOrigin }, namespace: '/daemon' })
+@WebSocketGateway({
+  cors: { origin: websocketOrigin, credentials: true },
+  namespace: '/daemon',
+})
 export class EdgeDaemonGateway
   implements OnGatewayConnection, OnGatewayDisconnect
 {
@@ -71,7 +75,11 @@ export class EdgeDaemonGateway
         : undefined;
     const handshakeAuth = client.handshake.auth as Record<string, unknown>;
     const tokenValue = handshakeAuth.token;
-    const token = typeof tokenValue === 'string' ? tokenValue : undefined;
+    const token =
+      (typeof tokenValue === 'string' ? tokenValue : undefined) ||
+      (connectionRole === 'clerk'
+        ? readCookie({ headers: client.handshake.headers }, USER_ACCESS_COOKIE)
+        : undefined);
 
     if (!token || !connectionRole || (connectionRole === 'clerk' && !shopId)) {
       this.logger.warn(`Rejected unauthenticated socket: ${client.id}`);

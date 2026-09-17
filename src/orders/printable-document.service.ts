@@ -1,12 +1,16 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
-import { execFile } from 'node:child_process';
+import {
+  BadRequestException,
+  Injectable,
+  PayloadTooLargeException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { execFile, spawn } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
 import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import JSZip from 'jszip';
 import { degrees, PDFDocument, type PDFEmbeddedPage } from 'pdf-lib';
 import sharp from 'sharp';
 import { DOCX_MIME_TYPE } from '../common/upload-security';
@@ -14,6 +18,31 @@ import { DOCX_MIME_TYPE } from '../common/upload-security';
 const execFileAsync = promisify(execFile);
 const OFFICE_TIMEOUT_MS = 120_000;
 const PRINT_MARGIN_POINTS = 18;
+const MAX_PDF_PAGES = positiveInteger('MAX_PDF_PAGES', 1_000);
+const MAX_IMAGE_PIXELS = positiveInteger('MAX_IMAGE_PIXELS', 75_000_000);
+const MAX_DOCX_ENTRIES = positiveInteger('MAX_DOCX_ENTRIES', 10_000);
+const MAX_DOCX_EXPANDED_BYTES = positiveInteger(
+  'MAX_DOCX_EXPANDED_BYTES',
+  256 * 1024 * 1024,
+);
+const MAX_DOCX_ENTRY_BYTES = positiveInteger(
+  'MAX_DOCX_ENTRY_BYTES',
+  128 * 1024 * 1024,
+);
+const MAX_NORMALIZED_PDF_BYTES = positiveInteger(
+  'MAX_NORMALIZED_PDF_BYTES',
+  100 * 1024 * 1024,
+);
+const MAX_CONCURRENT_CONVERSIONS = positiveInteger(
+  'MAX_CONCURRENT_CONVERSIONS',
+  2,
+);
+const MAX_QUEUED_CONVERSIONS = positiveInteger('MAX_QUEUED_CONVERSIONS', 20);
+
+function positiveInteger(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
 
 const PAPER_SIZES: Record<string, [number, number]> = {
   SHORT: [612, 792],
@@ -28,7 +57,19 @@ export interface PrintableDocument {
 
 @Injectable()
 export class PrintableDocumentService {
+  private activeConversions = 0;
+  private readonly conversionWaiters: Array<() => void> = [];
+
   async normalize(
+    file: Express.Multer.File,
+    paperSize: string,
+  ): Promise<PrintableDocument> {
+    return this.withConversionSlot(() =>
+      this.normalizeWithinSlot(file, paperSize),
+    );
+  }
+
+  private async normalizeWithinSlot(
     file: Express.Multer.File,
     paperSize: string,
   ): Promise<PrintableDocument> {
@@ -58,6 +99,11 @@ export class PrintableDocumentService {
       const sourcePages = source.getPages();
       const pageCount = sourcePages.length;
       if (pageCount < 1) throw new Error('PDF has no pages');
+      if (pageCount > MAX_PDF_PAGES) {
+        throw new PayloadTooLargeException(
+          `PDF files may contain at most ${MAX_PDF_PAGES} pages`,
+        );
+      }
 
       const output = await PDFDocument.create();
       for (const sourcePage of sourcePages) {
@@ -95,8 +141,11 @@ export class PrintableDocumentService {
         });
       }
 
-      return { buffer: Buffer.from(await output.save()), pageCount };
-    } catch {
+      const outputBuffer = Buffer.from(await output.save());
+      this.assertNormalizedSize(outputBuffer);
+      return { buffer: outputBuffer, pageCount };
+    } catch (error) {
+      if (error instanceof PayloadTooLargeException) throw error;
       throw new BadRequestException(errorMessage);
     }
   }
@@ -108,7 +157,7 @@ export class PrintableDocumentService {
     try {
       const normalizedImage = sharp(buffer, {
         failOn: 'error',
-        limitInputPixels: 100_000_000,
+        limitInputPixels: MAX_IMAGE_PIXELS,
       }).rotate();
       const png = await normalizedImage.png().toBuffer();
       const pdf = await PDFDocument.create();
@@ -133,8 +182,11 @@ export class PrintableDocumentService {
         height,
       });
 
-      return { buffer: Buffer.from(await pdf.save()), pageCount: 1 };
-    } catch {
+      const outputBuffer = Buffer.from(await pdf.save());
+      this.assertNormalizedSize(outputBuffer);
+      return { buffer: outputBuffer, pageCount: 1 };
+    } catch (error) {
+      if (error instanceof PayloadTooLargeException) throw error;
       throw new BadRequestException('The uploaded image is invalid');
     }
   }
@@ -143,7 +195,7 @@ export class PrintableDocumentService {
     buffer: Buffer,
     paperSize: string,
   ): Promise<PrintableDocument> {
-    await this.assertDocxPackage(buffer);
+    this.assertDocxPackage(buffer);
     const workingDirectory = await mkdtemp(join(tmpdir(), 'printflow-docx-'));
     const inputPath = join(workingDirectory, 'document.docx');
     const outputPath = join(workingDirectory, 'document.pdf');
@@ -152,23 +204,19 @@ export class PrintableDocumentService {
     try {
       await writeFile(inputPath, buffer, { flag: 'wx' });
       const executable = await this.findLibreOffice();
-      await execFileAsync(
-        executable,
-        [
-          '--headless',
-          `-env:UserInstallation=${pathToFileURL(profilePath).href}`,
-          '--convert-to',
-          'pdf:writer_pdf_Export',
-          '--outdir',
-          workingDirectory,
-          inputPath,
-        ],
-        {
-          timeout: OFFICE_TIMEOUT_MS,
-          maxBuffer: 1024 * 1024,
-          windowsHide: true,
-        },
-      );
+      await this.runLibreOffice(executable, [
+        '--headless',
+        '--nologo',
+        '--nodefault',
+        '--nolockcheck',
+        '--norestore',
+        `-env:UserInstallation=${pathToFileURL(profilePath).href}`,
+        '--convert-to',
+        'pdf:writer_pdf_Export',
+        '--outdir',
+        workingDirectory,
+        inputPath,
+      ]);
       const pdf = await readFile(outputPath);
       return this.fitPdfToPaper(
         pdf,
@@ -176,7 +224,12 @@ export class PrintableDocumentService {
         'The DOCX file could not be converted to a printable PDF',
       );
     } catch (error) {
-      if (error instanceof BadRequestException) throw error;
+      if (
+        error instanceof BadRequestException ||
+        error instanceof PayloadTooLargeException
+      ) {
+        throw error;
+      }
       throw new BadRequestException(
         'The DOCX file could not be converted to a printable PDF',
       );
@@ -187,19 +240,185 @@ export class PrintableDocumentService {
     }
   }
 
-  private async assertDocxPackage(buffer: Buffer): Promise<void> {
+  private assertDocxPackage(buffer: Buffer): void {
     try {
-      const archive = await JSZip.loadAsync(buffer, {
-        createFolders: false,
-      });
+      const entries = this.inspectZipCentralDirectory(buffer);
       if (
-        !archive.file('[Content_Types].xml') ||
-        !archive.file('word/document.xml')
+        !entries.has('[Content_Types].xml') ||
+        !entries.has('word/document.xml')
       ) {
         throw new Error('Required DOCX entries are missing');
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof PayloadTooLargeException) throw error;
       throw new BadRequestException('The uploaded DOCX file is invalid');
+    }
+  }
+
+  private inspectZipCentralDirectory(buffer: Buffer): Set<string> {
+    const minimumEocdLength = 22;
+    const searchStart = Math.max(0, buffer.length - 65_557);
+    let eocdOffset = -1;
+    for (
+      let offset = buffer.length - minimumEocdLength;
+      offset >= searchStart;
+      offset -= 1
+    ) {
+      if (buffer.readUInt32LE(offset) === 0x06054b50) {
+        eocdOffset = offset;
+        break;
+      }
+    }
+    if (eocdOffset < 0) throw new Error('ZIP directory is missing');
+
+    const entryCount = buffer.readUInt16LE(eocdOffset + 10);
+    const directorySize = buffer.readUInt32LE(eocdOffset + 12);
+    const directoryOffset = buffer.readUInt32LE(eocdOffset + 16);
+    if (
+      entryCount === 0xffff ||
+      directorySize === 0xffffffff ||
+      directoryOffset === 0xffffffff
+    ) {
+      throw new PayloadTooLargeException('ZIP64 DOCX files are not supported');
+    }
+    if (entryCount < 1 || entryCount > MAX_DOCX_ENTRIES) {
+      throw new PayloadTooLargeException(
+        `DOCX files may contain at most ${MAX_DOCX_ENTRIES} entries`,
+      );
+    }
+    if (directoryOffset + directorySize > buffer.length) {
+      throw new Error('ZIP directory is outside the uploaded file');
+    }
+
+    const names = new Set<string>();
+    let totalExpandedBytes = 0;
+    let offset = directoryOffset;
+    for (let index = 0; index < entryCount; index += 1) {
+      if (
+        offset + 46 > buffer.length ||
+        buffer.readUInt32LE(offset) !== 0x02014b50
+      ) {
+        throw new Error('Invalid ZIP directory entry');
+      }
+      const flags = buffer.readUInt16LE(offset + 8);
+      const compressedSize = buffer.readUInt32LE(offset + 20);
+      const expandedSize = buffer.readUInt32LE(offset + 24);
+      const fileNameLength = buffer.readUInt16LE(offset + 28);
+      const extraLength = buffer.readUInt16LE(offset + 30);
+      const commentLength = buffer.readUInt16LE(offset + 32);
+      if ((flags & 0x1) !== 0) {
+        throw new BadRequestException('Encrypted DOCX files are not supported');
+      }
+      if (compressedSize === 0xffffffff || expandedSize === 0xffffffff) {
+        throw new PayloadTooLargeException(
+          'ZIP64 DOCX entries are not supported',
+        );
+      }
+      if (expandedSize > MAX_DOCX_ENTRY_BYTES) {
+        throw new PayloadTooLargeException('A DOCX entry is too large');
+      }
+      totalExpandedBytes += expandedSize;
+      if (totalExpandedBytes > MAX_DOCX_EXPANDED_BYTES) {
+        throw new PayloadTooLargeException(
+          'The expanded DOCX file is too large',
+        );
+      }
+      if (compressedSize > 0 && expandedSize / compressedSize > 500) {
+        throw new PayloadTooLargeException(
+          'The DOCX compression ratio is unsafe',
+        );
+      }
+
+      const nameStart = offset + 46;
+      const nameEnd = nameStart + fileNameLength;
+      if (nameEnd > buffer.length) throw new Error('Invalid ZIP entry name');
+      const name = buffer
+        .subarray(nameStart, nameEnd)
+        .toString('utf8')
+        .replace(/\\/g, '/');
+      if (name.startsWith('/') || name.split('/').includes('..')) {
+        throw new BadRequestException('The DOCX contains an unsafe entry path');
+      }
+      names.add(name);
+      offset = nameEnd + extraLength + commentLength;
+    }
+    return names;
+  }
+
+  private async runLibreOffice(
+    executable: string,
+    args: string[],
+  ): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(executable, args, {
+        windowsHide: true,
+        detached: process.platform !== 'win32',
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let errorOutput = '';
+      child.stderr?.on('data', (chunk: Buffer) => {
+        if (errorOutput.length < 1024 * 1024) {
+          errorOutput += chunk.toString('utf8');
+        }
+      });
+      const timer = setTimeout(() => {
+        if (process.platform === 'win32' && child.pid) {
+          void execFileAsync(
+            'taskkill.exe',
+            ['/pid', String(child.pid), '/T', '/F'],
+            { windowsHide: true },
+          ).catch(() => child.kill('SIGKILL'));
+        } else if (child.pid) {
+          try {
+            process.kill(-child.pid, 'SIGKILL');
+          } catch {
+            child.kill('SIGKILL');
+          }
+        }
+        reject(new Error('LibreOffice conversion timed out'));
+      }, OFFICE_TIMEOUT_MS);
+      timer.unref();
+      child.once('error', (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.once('exit', (code, signal) => {
+        clearTimeout(timer);
+        if (code === 0) resolve();
+        else {
+          reject(
+            new Error(
+              `LibreOffice exited with ${code ?? signal}: ${errorOutput.slice(0, 500)}`,
+            ),
+          );
+        }
+      });
+    });
+  }
+
+  private assertNormalizedSize(buffer: Buffer): void {
+    if (buffer.length > MAX_NORMALIZED_PDF_BYTES) {
+      throw new PayloadTooLargeException('The normalized PDF is too large');
+    }
+  }
+
+  private async withConversionSlot<T>(work: () => Promise<T>): Promise<T> {
+    if (this.activeConversions >= MAX_CONCURRENT_CONVERSIONS) {
+      if (this.conversionWaiters.length >= MAX_QUEUED_CONVERSIONS) {
+        throw new ServiceUnavailableException(
+          'Document conversion is busy. Please try again shortly.',
+        );
+      }
+      await new Promise<void>((resolve) =>
+        this.conversionWaiters.push(resolve),
+      );
+    }
+    this.activeConversions += 1;
+    try {
+      return await work();
+    } finally {
+      this.activeConversions -= 1;
+      this.conversionWaiters.shift()?.();
     }
   }
 

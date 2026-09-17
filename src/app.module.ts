@@ -27,7 +27,12 @@ import { DaemonDevicesModule } from './daemon-devices/daemon-devices.module';
           'JWT_SECRET',
         ];
         if (config.NODE_ENV === 'production') {
-          required.push('FRONTEND_URL', 'ADMIN_URL', 'AGENT_JWT_SECRET');
+          required.push(
+            'FRONTEND_URL',
+            'ADMIN_URL',
+            'AGENT_JWT_SECRET',
+            'TOTP_ENCRYPTION_KEY',
+          );
         }
         const missing = required.filter((key) => !config[key]);
         if (missing.length > 0) {
@@ -44,6 +49,14 @@ import { DaemonDevicesModule } from './daemon-devices/daemon-devices.module';
         ) {
           throw new Error(
             'AGENT_JWT_SECRET must contain at least 32 characters',
+          );
+        }
+        if (
+          config.TOTP_ENCRYPTION_KEY &&
+          String(config.TOTP_ENCRYPTION_KEY).length < 32
+        ) {
+          throw new Error(
+            'TOTP_ENCRYPTION_KEY must contain at least 32 characters',
           );
         }
         for (const key of [

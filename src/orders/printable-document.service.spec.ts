@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, PayloadTooLargeException } from '@nestjs/common';
 import JSZip from 'jszip';
 import { PDFDocument } from 'pdf-lib';
 import sharp from 'sharp';
@@ -63,5 +63,24 @@ describe('PrintableDocumentService', () => {
     await expect(
       service.normalize(upload(DOCX_MIME_TYPE, buffer), 'A4'),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('allows a generous PDF limit but rejects more than 1,000 pages', async () => {
+    const source = await PDFDocument.create();
+    for (let page = 0; page < 1_000; page += 1) source.addPage([10, 10]);
+    const accepted = await service.normalize(
+      upload('application/pdf', Buffer.from(await source.save())),
+      'A4',
+    );
+    expect(accepted.pageCount).toBe(1_000);
+
+    source.addPage([10, 10]);
+
+    await expect(
+      service.normalize(
+        upload('application/pdf', Buffer.from(await source.save())),
+        'A4',
+      ),
+    ).rejects.toBeInstanceOf(PayloadTooLargeException);
   });
 });

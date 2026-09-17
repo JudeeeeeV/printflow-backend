@@ -13,9 +13,7 @@ import { ChangePasswordDto } from './dto/change-password.dto';
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
 
-  constructor(
-    private readonly supabaseService: SupabaseService,
-  ) {}
+  constructor(private readonly supabaseService: SupabaseService) {}
 
   async login(loginDto: LoginDto) {
     const { email, password } = loginDto;
@@ -27,7 +25,7 @@ export class AuthService {
         password,
       });
 
-    if (authError) throw new UnauthorizedException(authError.message);
+    if (authError) throw new UnauthorizedException('Invalid credentials');
 
     if (!authData.user.email_confirmed_at) {
       throw new UnauthorizedException('Verify your email before signing in.');
@@ -58,14 +56,64 @@ export class AuthService {
         ? 'Print Shop'
         : 'Student';
 
+    if (!authData.session?.access_token || !authData.session.refresh_token) {
+      throw new UnauthorizedException('Unable to establish a session');
+    }
+
     return {
-      token: authData.session?.access_token || '',
+      accessToken: authData.session.access_token,
+      refreshToken: authData.session.refresh_token,
+      expiresIn: authData.session.expires_in || 3600,
       user: {
         id: authData.user.id,
         email: authData.user.email,
         roleTag: frontendRoleTag,
       },
     };
+  }
+
+  async refresh(refreshToken: string) {
+    const { data, error } = await this.supabaseService
+      .getAdminClient()
+      .auth.refreshSession({ refresh_token: refreshToken });
+    if (
+      error ||
+      !data.session?.access_token ||
+      !data.session.refresh_token ||
+      !data.user
+    ) {
+      throw new UnauthorizedException('Session refresh failed');
+    }
+    const { data: profile, error: profileError } = await this.supabaseService
+      .getAdminClient()
+      .from('users')
+      .select('role')
+      .eq('id', data.user.id)
+      .single();
+    if (profileError || !profile) {
+      throw new UnauthorizedException('User profile not found');
+    }
+    return {
+      accessToken: data.session.access_token,
+      refreshToken: data.session.refresh_token,
+      expiresIn: data.session.expires_in || 3600,
+      user: {
+        id: data.user.id,
+        email: data.user.email,
+        roleTag:
+          profile.role === 'CLERK' || profile.role === 'MANAGER'
+            ? 'Print Shop'
+            : 'Student',
+      },
+    };
+  }
+
+  async logout(accessToken?: string): Promise<void> {
+    if (!accessToken) return;
+    await this.supabaseService
+      .getAdminClient()
+      .auth.admin.signOut(accessToken, 'local')
+      .catch(() => undefined);
   }
   async changePassword(userId: string, dto: ChangePasswordDto) {
     const supabase = this.supabaseService.getAdminClient();
@@ -78,7 +126,9 @@ export class AuthService {
     }
 
     if (dto.currentPassword === dto.newPassword) {
-      throw new BadRequestException('Your new password cannot be the same as your old password.');
+      throw new BadRequestException(
+        'Your new password cannot be the same as your old password.',
+      );
     }
 
     // 2. Verify current password

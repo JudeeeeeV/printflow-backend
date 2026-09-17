@@ -1,5 +1,7 @@
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config({ path: './.env' });
+const { assertMaintenanceAccess } = require('./scripts/maintenance-guard');
+if (assertMaintenanceAccess('administrator 2FA reset', { write: true }).dryRun) process.exit(0);
 
 async function reset2FA() {
   const supabase = createClient(
@@ -14,7 +16,11 @@ async function reset2FA() {
 
   const { data, error } = await supabase
     .from('admins')
-    .update({ is_2fa_enabled: false, two_factor_secret: null })
+    .update({
+      is_2fa_enabled: false,
+      two_factor_secret: null,
+      two_factor_secret_encrypted: null,
+    })
     .eq('email', email)
     .select();
 

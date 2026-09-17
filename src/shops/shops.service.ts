@@ -1,4 +1,8 @@
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+} from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import OpenAI from 'openai';
 import {
@@ -10,11 +14,14 @@ import {
 
 @Injectable()
 export class ShopsService {
+  private readonly logger = new Logger(ShopsService.name);
   private readonly openai: OpenAI | null;
+  private readonly aiPermitReviewEnabled: boolean;
 
   constructor(private supabaseService: SupabaseService) {
     const apiKey = process.env.OPENAI_API_KEY;
     this.openai = apiKey ? new OpenAI({ apiKey }) : null;
+    this.aiPermitReviewEnabled = process.env.ENABLE_AI_PERMIT_REVIEW === 'true';
   }
 
   async getVerifiedShops() {
@@ -114,63 +121,60 @@ export class ShopsService {
       );
     }
 
-    const reviewUrl = await this.supabaseService.createSignedStorageUrl(
-      'permits',
-      fileName,
-      600,
-    );
-    if (!reviewUrl) {
-      throw new InternalServerErrorException(
-        'Failed to prepare permit for review',
-      );
-    }
-
     let aiSuggestion = 'DENY'; // Default to DENY to enforce ACCEPT/DENY binary
-    let aiReasoning = 'Awaiting analysis...';
+    let aiReasoning = 'Queued for manual review.';
 
-    try {
-      if (!this.openai) {
-        throw new Error('OPENAI_API_KEY is not configured');
-      }
-      const response = await this.openai.chat.completions.create({
-        model: 'gpt-4o',
-        response_format: { type: 'json_object' },
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You are a compliance assistant evaluating business permits. Extract text, check dates, and verify the business name. Output JSON strictly matching this schema: { "action": "ACCEPT" | "DENY", "reasoning": "Your reasoning here..." }',
-          },
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: 'Please review this business permit.' },
-              {
-                type: 'image_url',
-                image_url: {
-                  url: reviewUrl,
+    if (this.aiPermitReviewEnabled && this.openai) {
+      try {
+        const reviewUrl = await this.supabaseService.createSignedStorageUrl(
+          'permits',
+          fileName,
+          600,
+        );
+        if (!reviewUrl) throw new Error('Permit review URL is unavailable');
+        const response = await this.openai.chat.completions.create({
+          model: 'gpt-4o',
+          response_format: { type: 'json_object' },
+          messages: [
+            {
+              role: 'system',
+              content:
+                'You are a compliance assistant evaluating business permits. Extract text, check dates, and verify the business name. Output JSON strictly matching this schema: { "action": "ACCEPT" | "DENY", "reasoning": "Your reasoning here..." }',
+            },
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: 'Please review this business permit.' },
+                {
+                  type: 'image_url',
+                  image_url: {
+                    url: reviewUrl,
+                  },
                 },
-              },
-            ],
-          },
-        ],
-        max_tokens: 300,
-      });
+              ],
+            },
+          ],
+          max_tokens: 300,
+        });
 
-      const responseContent = response.choices[0].message.content;
-      if (responseContent) {
-        const parsed = JSON.parse(responseContent);
-        // Force uppercase and fallback to DENY if it doesn't explicitly say ACCEPT
-        const rawAction = String(parsed.action || '')
-          .toUpperCase()
-          .trim();
-        aiSuggestion = rawAction === 'ACCEPT' ? 'ACCEPT' : 'DENY';
-        aiReasoning = parsed.reasoning || 'No reasoning provided.';
+        const responseContent = response.choices[0].message.content;
+        if (responseContent) {
+          const parsed = JSON.parse(responseContent);
+          // Force uppercase and fallback to DENY if it doesn't explicitly say ACCEPT
+          const rawAction = String(parsed.action || '')
+            .toUpperCase()
+            .trim();
+          aiSuggestion = rawAction === 'ACCEPT' ? 'ACCEPT' : 'DENY';
+          aiReasoning = parsed.reasoning || 'No reasoning provided.';
+        }
+      } catch {
+        this.logger.warn(
+          'Automated permit review failed; manual review is required',
+        );
+        aiSuggestion = 'DENY';
+        aiReasoning =
+          'Automated review was unavailable. Please review manually.';
       }
-    } catch (error: any) {
-      console.error('OpenAI Verification Error:', error);
-      aiSuggestion = 'DENY'; // Must be strictly ACCEPT or DENY
-      aiReasoning = `Failed to process document automatically: ${error.message}. Please review manually.`;
     }
 
     const { data: updateData, error: updateError } = await supabase

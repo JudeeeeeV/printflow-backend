@@ -12,12 +12,20 @@ import {
   AdminTokenType,
 } from '../decorators/admin-token.decorator';
 import type { Request } from 'express';
+import {
+  ADMIN_ACCESS_COOKIE,
+  ADMIN_TEMP_COOKIE,
+  bearerToken,
+  readCookie,
+} from '../../auth/auth-cookies';
+import { createHash } from 'node:crypto';
 
 export interface AdminJwtPayload {
   sub: string;
   email: string;
   role?: 'ADMIN';
   tokenType: AdminTokenType;
+  jti?: string;
 }
 
 interface AdminRequest extends Request {
@@ -34,15 +42,20 @@ export class AdminAuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<AdminRequest>();
-    const authHeader = request.headers.authorization;
-
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      throw new UnauthorizedException(
-        'Missing or invalid Authorization header',
+    const requiredTokenType =
+      this.reflector.getAllAndOverride<AdminTokenType>(ADMIN_TOKEN_TYPE_KEY, [
+        context.getHandler(),
+        context.getClass(),
+      ]) || 'admin-access';
+    const token =
+      bearerToken(request) ||
+      readCookie(
+        request,
+        requiredTokenType === 'admin-temp'
+          ? ADMIN_TEMP_COOKIE
+          : ADMIN_ACCESS_COOKIE,
       );
-    }
-
-    const token = authHeader.split(' ')[1];
+    if (!token) throw new UnauthorizedException('Admin session is missing');
 
     try {
       const payload = await this.jwtService.verifyAsync<AdminJwtPayload>(
@@ -54,18 +67,32 @@ export class AdminAuthGuard implements CanActivate {
         },
       );
 
-      const requiredTokenType =
-        this.reflector.getAllAndOverride<AdminTokenType>(ADMIN_TOKEN_TYPE_KEY, [
-          context.getHandler(),
-          context.getClass(),
-        ]) || 'admin-access';
-
       if (
         !payload.sub ||
+        (requiredTokenType === 'admin-access' && !payload.jti) ||
         payload.tokenType !== requiredTokenType ||
         (requiredTokenType === 'admin-access' && payload.role !== 'ADMIN')
       ) {
         throw new UnauthorizedException('Invalid admin token type');
+      }
+
+      if (requiredTokenType === 'admin-access') {
+        const tokenIdHash = createHash('sha256')
+          .update(payload.jti!, 'utf8')
+          .digest('hex');
+        const { data: session, error: sessionError } =
+          await this.supabaseService
+            .getAdminClient()
+            .from('admin_sessions')
+            .select('id')
+            .eq('admin_id', payload.sub)
+            .eq('token_id_hash', tokenIdHash)
+            .is('revoked_at', null)
+            .gt('expires_at', new Date().toISOString())
+            .maybeSingle();
+        if (sessionError || !session) {
+          throw new UnauthorizedException('Admin session is no longer active');
+        }
       }
 
       const { data: admin, error } = await this.supabaseService

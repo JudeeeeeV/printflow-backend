@@ -1,4 +1,7 @@
 const { createClient } = require('@supabase/supabase-js');
+const { assertMaintenanceAccess } = require('./scripts/maintenance-guard');
+
+assertMaintenanceAccess('schema access check');
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;

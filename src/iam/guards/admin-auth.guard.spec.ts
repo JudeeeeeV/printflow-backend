@@ -16,15 +16,28 @@ describe('AdminAuthGuard', () => {
   };
 
   function createGuard(payload: any, adminResult = activeAdmin) {
-    const chain: any = {
-      select: jest.fn(() => chain),
-      eq: jest.fn(() => chain),
+    const sessionChain: any = {
+      select: jest.fn(() => sessionChain),
+      eq: jest.fn(() => sessionChain),
+      is: jest.fn(() => sessionChain),
+      gt: jest.fn(() => sessionChain),
+      maybeSingle: jest.fn(async () => ({
+        data: { id: 'session-id' },
+        error: null,
+      })),
+    };
+    const adminChain: any = {
+      select: jest.fn(() => adminChain),
+      eq: jest.fn(() => adminChain),
       single: jest.fn(async () => adminResult),
     };
     const jwtService = { verifyAsync: jest.fn(async () => payload) };
     const reflector = { getAllAndOverride: jest.fn(() => undefined) };
     const supabaseService = {
-      getAdminClient: () => ({ from: () => chain }),
+      getAdminClient: () => ({
+        from: (table: string) =>
+          table === 'admin_sessions' ? sessionChain : adminChain,
+      }),
     };
     return {
       guard: new AdminAuthGuard(
@@ -43,6 +56,7 @@ describe('AdminAuthGuard', () => {
       email: 'admin@example.com',
       role: 'ADMIN',
       tokenType: 'admin-access',
+      jti: 'session-token-id',
     });
     await expect(guard.canActivate(contextFor(request))).resolves.toBe(true);
     expect(request).toHaveProperty('user.tokenType', 'admin-access');
@@ -68,6 +82,7 @@ describe('AdminAuthGuard', () => {
         email: 'admin@example.com',
         role: 'ADMIN',
         tokenType: 'admin-access',
+        jti: 'session-token-id',
       },
       { data: null, error: { message: 'not found' } } as any,
     );
