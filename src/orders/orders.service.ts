@@ -6,23 +6,26 @@ import {
   ForbiddenException,
   Logger,
 } from '@nestjs/common';
-import { PDFDocument } from 'pdf-lib';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../supabase/supabase.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateDraftDto } from './dto/update-draft.dto';
 import {
   assertFileSignature,
-  DOCUMENT_MIME_TYPES,
   IMAGE_MIME_TYPES,
+  PRINTABLE_DOCUMENT_MIME_TYPES,
   secureObjectName,
 } from '../common/upload-security';
+import { PrintableDocumentService } from './printable-document.service';
 
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
 
-  constructor(private readonly supabaseService: SupabaseService) {}
+  constructor(
+    private readonly supabaseService: SupabaseService,
+    private readonly printableDocuments: PrintableDocumentService,
+  ) {}
 
   private async requireVerifiedShop(shopId: string): Promise<void> {
     const { data, error } = await this.supabaseService
@@ -80,10 +83,14 @@ export class OrdersService {
       throw new BadRequestException('Draft asset could not be validated');
     }
     try {
-      const document = await PDFDocument.load(await blob.arrayBuffer());
-      const pages = document.getPageCount();
-      if (pages < 1) throw new Error('PDF has no pages');
-      return pages;
+      const printable = await this.printableDocuments.normalize(
+        {
+          mimetype: 'application/pdf',
+          buffer: Buffer.from(await blob.arrayBuffer()),
+        } as Express.Multer.File,
+        'A4',
+      );
+      return printable.pageCount;
     } catch {
       throw new BadRequestException('Draft PDF is invalid');
     }
@@ -462,7 +469,7 @@ export class OrdersService {
     file: Express.Multer.File,
   ) {
     const supabase = this.supabaseService.getAdminClient();
-    assertFileSignature(file, DOCUMENT_MIME_TYPES);
+    assertFileSignature(file, PRINTABLE_DOCUMENT_MIME_TYPES);
 
     // Evaluate the string sent by FormData
     const isDraftOrder = payload.isDraft === 'true';
@@ -482,16 +489,11 @@ export class OrdersService {
 
     const pricingMatrix = shop.pricing_matrix;
 
-    let pageCount = 1;
-    if (file.mimetype === 'application/pdf') {
-      try {
-        const pdfDoc = await PDFDocument.load(file.buffer);
-        pageCount = pdfDoc.getPageCount();
-        if (pageCount < 1) throw new Error('PDF has no pages');
-      } catch {
-        throw new BadRequestException('The uploaded PDF is invalid');
-      }
-    }
+    const printable = await this.printableDocuments.normalize(
+      file,
+      payload.paperSize,
+    );
+    const pageCount = printable.pageCount;
 
     const calculatedTotal = this.calculatePrice(
       pricingMatrix,
@@ -523,13 +525,16 @@ export class OrdersService {
       );
     }
 
-    // 2. Upload the raw design asset to the 'assets' bucket
+    // 2. Store a normalized PDF so every printer agent receives one format.
     await this.ensureAssetsBucket();
-    const fileName = secureObjectName(`${userId}/${order.id}`, file.mimetype);
+    const fileName = secureObjectName(
+      `${userId}/${order.id}`,
+      'application/pdf',
+    );
     const { error: uploadError } = await supabase.storage
       .from('assets')
-      .upload(fileName, file.buffer, {
-        contentType: file.mimetype,
+      .upload(fileName, printable.buffer, {
+        contentType: 'application/pdf',
       });
 
     if (uploadError) {
@@ -545,7 +550,7 @@ export class OrdersService {
 
       file_url: fileName,
       dpi: 300, // Baseline required by application logic
-      file_type: file.mimetype.startsWith('image/') ? 'IMAGE' : 'PDF',
+      file_type: 'PDF',
     });
 
     if (assetError) {

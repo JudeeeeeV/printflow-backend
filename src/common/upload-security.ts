@@ -11,6 +11,14 @@ export const DOCUMENT_MIME_TYPES = [
   'image/webp',
 ] as const;
 
+export const DOCX_MIME_TYPE =
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+export const PRINTABLE_DOCUMENT_MIME_TYPES = [
+  ...DOCUMENT_MIME_TYPES,
+  DOCX_MIME_TYPE,
+] as const;
+
 export const IMAGE_MIME_TYPES = [
   'image/jpeg',
   'image/png',
@@ -57,7 +65,9 @@ export function assertFileSignature(
       bytes[2] === 0xff) ||
     (file.mimetype === 'image/webp' &&
       bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
-      bytes.subarray(8, 12).toString('ascii') === 'WEBP');
+      bytes.subarray(8, 12).toString('ascii') === 'WEBP') ||
+    (file.mimetype === DOCX_MIME_TYPE &&
+      bytes.subarray(0, 4).equals(Buffer.from('504b0304', 'hex')));
 
   if (!valid) {
     throw new BadRequestException(
@@ -72,6 +82,7 @@ export function secureObjectName(prefix: string, mimetype: string): string {
     'image/jpeg': 'jpg',
     'image/png': 'png',
     'image/webp': 'webp',
+    [DOCX_MIME_TYPE]: 'docx',
   };
   return `${prefix}/${randomUUID()}.${extension[mimetype]}`;
 }

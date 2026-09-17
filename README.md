@@ -72,8 +72,12 @@ OPENAI_API_KEY=
 
 ## Production deployment
 
-The included `render.yaml` uses Node 24.14.1, runs a reproducible `npm ci`
-build, starts `dist/src/main.js`, and configures `/health` as Render's liveness
+The included `render.yaml` builds the backend from `Dockerfile`, using Node
+24.14.1 and LibreOffice Writer. LibreOffice is required to convert DOCX order
+uploads into PDFs; image uploads are also normalized to PDF before storage.
+Every converted page is proportionally fitted and centered on the paper size
+selected for the order, with landscape source pages kept in landscape.
+The service starts `dist/src/main.js` and uses `/health` as Render's liveness
 check. Before deploying:
 
 1. Apply `supabase/migrations/20260915_security_hardening.sql` to the production

@@ -1,13 +1,10 @@
 services:
   - type: web
     name: printflow-backend
-    runtime: node
-    buildCommand: npm ci --include=dev && npm run build
-    startCommand: npm run start:prod
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     envVars:
-      - key: NODE_VERSION
-        value: 24.14.1
       - key: NODE_ENV
         value: production
       - key: SUPABASE_URL

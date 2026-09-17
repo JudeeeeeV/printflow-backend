@@ -24,10 +24,10 @@ import { RolesGuard } from '../iam/guards/roles.guard';
 import { Roles } from '../iam/decorators/roles.decorator';
 import type { Request } from 'express';
 import {
-  DOCUMENT_MIME_TYPES,
   IMAGE_MIME_TYPES,
   MAX_DOCUMENT_BYTES,
   MAX_IMAGE_BYTES,
+  PRINTABLE_DOCUMENT_MIME_TYPES,
   secureUploadOptions,
 } from '../common/upload-security';
 import { Throttle } from '@nestjs/throttler';
@@ -91,7 +91,7 @@ export class OrdersController {
   @UseInterceptors(
     FileInterceptor(
       'file',
-      secureUploadOptions(DOCUMENT_MIME_TYPES, MAX_DOCUMENT_BYTES),
+      secureUploadOptions(PRINTABLE_DOCUMENT_MIME_TYPES, MAX_DOCUMENT_BYTES),
     ),
   )
   async createOrder(
