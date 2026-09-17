@@ -68,86 +68,87 @@ JWT_SECRET=replace-with-at-least-32-random-characters
 OPENAI_API_KEY=
 ```
 
----
+## 🖨️ Windows Printer Agent
 
-## Production deployment
+The printer agent connects PrintFlow to the printers installed on a shop's
+Windows computer. Shop staff use the installer from the dashboard. They do not
+need to download the source code, install Node.js, or run terminal commands.
 
-The included `render.yaml` builds the backend from `Dockerfile`, using Node
-24.14.1 and LibreOffice Writer. LibreOffice is required to convert DOCX order
-uploads into PDFs; image uploads are also normalized to PDF before storage.
-Every converted page is proportionally fitted and centered on the paper size
-selected for the order, with landscape source pages kept in landscape.
-The service starts `dist/src/main.js` and uses `/health` as Render's liveness
-check. Before deploying:
+### Setting up a shop computer
 
-1. Apply `supabase/migrations/20260915_security_hardening.sql` to the production
-   Supabase project.
-2. Rotate the previously exposed Supabase service-role key and set the new
-   value as `SUPABASE_SERVICE_ROLE_KEY`.
-3. Set `FRONTEND_URL` and `ADMIN_URL` to the exact HTTPS origins of the two
-   deployed static sites. Do not include a trailing slash or a path.
-4. Generate a new `JWT_SECRET`. Existing admin sessions will be invalidated.
-5. Deploy the backend, then rebuild both Vite sites so their build-time
-   `VITE_API_URL` and Supabase public variables are embedded correctly.
+Once the shop has been approved:
 
-The frontend and admin repositories each include their own Render Blueprint
-with an SPA fallback rewrite. A direct visit to `/health` must return a JSON
-response whose `status` is `ok` before traffic is switched to the new backend.
+1. Connect the printer and make sure it works normally in Windows.
+2. Open **Printer Agent** from the PrintFlow shop dashboard.
+3. Download and run the Windows installer.
+4. Sign in with the approved shop account when the setup page opens.
+5. Go back to the **Printer Agent** page. The computer should show as
+   **Connected**, and the installed printer should appear in the list.
 
----
+If a printer is missing, use **Rescan printers**. The agent starts automatically
+when the Windows user signs in and reconnects after temporary network problems.
+For now, each shop can have one active printing computer.
 
-## 📡 Edge Daemon Setup
+### Printing orders
 
-Physical print shops must run the local daemon script to connect their local Windows Spooler to the cloud WSS Gateway.
+After a payment is approved, the order appears under **Print Ready**. Select the
+orders you want to print, choose a printer, and click **Send to Daemon (Batch)**.
+The agent sends each job to the printer one at a time and reports the result back
+to the dashboard.
 
-1. Locate the daemon script within the shop portal or backend utilities folder.
-2. Run the script on the shop's dedicated printing PC:
+Simply connecting a printer does not print everything in the queue. The clerk
+still chooses which orders to send.
 
-```bash
-npm run daemon
+PrintFlow accepts PDF, DOCX, JPG, PNG, and WEBP files. Images and DOCX files are
+converted to PDF before printing. Each page is resized to fit the selected
+Short, A4, or Long paper without stretching it, and landscape pages stay in
+landscape.
+
+### Server setup
+
+Apply these migrations before allowing shops to register printer agents:
+
+```text
+supabase/migrations/20260917_daemon_devices.sql
+supabase/migrations/20260918_cleanup_revoked_daemon_devices.sql
 ```
 
-3. Sign in with a verified print-shop account. The launcher passes only that shop's short-lived access token to the daemon; it never uses the Supabase service-role key.
+Set `AGENT_JWT_SECRET` to a stable secret with at least 32 characters. Keep
+`ALLOW_LEGACY_DAEMON_AUTH=false` in production. The backend must run from the
+included Dockerfile because it installs LibreOffice for DOCX conversion.
 
-### Windows Printer Agent
+### Development and releases
 
-The production replacement for the terminal daemon lives in `agent/`. It uses a
-one-time shop login to register the Windows computer, protects the resulting
-device credential with Windows DPAPI, starts at user login, refreshes short-lived
-agent tokens, and reconnects to the Socket.IO gateway automatically.
-
-Apply `supabase/migrations/20260917_daemon_devices.sql` before enabling agent
-registration. Production also requires a stable `AGENT_JWT_SECRET` containing at
-least 32 characters.
-
-Run the agent from source during development:
+To run the current agent from source while developing:
 
 ```bash
 npm run agent
 ```
 
-Build the Windows installer:
+The older `npm run daemon` command is kept only for legacy local testing. It
+starts the old terminal-based daemon and should not be used by shop staff.
+
+Build the Windows installer from a Windows development computer:
 
 ```bash
 npm run agent:build:windows
 ```
 
-The generated installer and checksum metadata are written to `agent/release/`.
-Build output is intentionally ignored by Git. The build uses a bundled Node
-single-executable agent and a per-user Windows installer, so a shop computer does
-not need Node.js or the source repository.
+The finished installer and its checksum are placed in `agent/release/`. This
+folder is ignored by Git. The installer already contains the runtime and
+printing dependencies needed by the shop computer.
 
-To publish the current installer to the private Supabase `agent-releases` bucket:
+Publish the installer to the private Supabase `agent-releases` bucket:
 
 ```bash
 npm run agent:publish:windows
 ```
 
-The publish command prints the `AGENT_WINDOWS_STORAGE_PATH`, version, checksum,
-and publication-time values that must be copied into the deployed backend's
-environment. The clerk-side **Printer Agent** page requests a short-lived signed
-download URL from the backend. `AGENT_WINDOWS_DOWNLOAD_URL` can instead point to
-an externally hosted installer.
+After publishing, copy the printed storage path, version, checksum, and
+publication time into the matching `AGENT_WINDOWS_*` environment variables on
+the deployed backend. Redeploy the backend so the **Printer Agent** page offers
+the new installer. You can also use `AGENT_WINDOWS_DOWNLOAD_URL` when the
+installer is hosted somewhere else.
 
 ---
 
