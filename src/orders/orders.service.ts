@@ -18,6 +18,15 @@ import {
 } from '../common/upload-security';
 import { PrintableDocumentService } from './printable-document.service';
 
+const isMissingOriginalFilenameColumn = (
+  error: { code?: string; message?: string } | null,
+): boolean =>
+  Boolean(
+    error &&
+    (error.code === '42703' || error.code === 'PGRST204') &&
+    error.message?.includes('original_filename'),
+  );
+
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
@@ -263,17 +272,27 @@ export class OrdersService {
     const from = (page - 1) * limit;
     const to = from + limit - 1;
 
-    // Ensure shop_id and assets(file_url) are included in the select query
-    const { data, error, count } = await supabase
-      .from('orders')
-      .select(
-        'id, total, created_at, shop_id, shops(name), assets(file_url), paper_size, print_color_mode, page_count',
-        { count: 'exact' },
-      )
-      .eq('client_id', userId)
-      .eq('state', 'DRAFT')
-      .order('created_at', { ascending: false })
-      .range(from, to);
+    const fetchDraftRows = (includeOriginalFilename: boolean) => {
+      const assetColumns = includeOriginalFilename
+        ? 'assets(file_url, original_filename)'
+        : 'assets(file_url)';
+
+      return supabase
+        .from('orders')
+        .select(
+          `id, total, created_at, shop_id, shops(name), ${assetColumns}, paper_size, print_color_mode, page_count`,
+          { count: 'exact' },
+        )
+        .eq('client_id', userId)
+        .eq('state', 'DRAFT')
+        .order('created_at', { ascending: false })
+        .range(from, to);
+    };
+
+    let { data, error, count } = await fetchDraftRows(true);
+    if (isMissingOriginalFilenameColumn(error)) {
+      ({ data, error, count } = await fetchDraftRows(false));
+    }
 
     if (error) {
       throw new InternalServerErrorException(
@@ -285,13 +304,17 @@ export class OrdersService {
       (data || []).map(async (order: any) => {
         let fileUrl = '';
         let fileName = 'Design File';
+        let storedPath = '';
+        let originalFileName =
+          (order as { assets?: Array<{ original_filename?: string | null }> })
+            .assets?.[0]?.original_filename || null;
 
         if (
           order.assets &&
           order.assets.length > 0 &&
           order.assets[0].file_url
         ) {
-          const storedPath = this.supabaseService.storagePath(
+          storedPath = this.supabaseService.storagePath(
             order.assets[0].file_url,
             'assets',
           );
@@ -306,11 +329,32 @@ export class OrdersService {
             )) || '';
         }
 
+        if (!originalFileName && storedPath) {
+          try {
+            const { data: assetInfo } = await supabase.storage
+              .from('assets')
+              .info(storedPath);
+            const assetMetadata = assetInfo as {
+              metadata?: Record<string, unknown> | null;
+              userMetadata?: Record<string, unknown> | null;
+            } | null;
+            const storedName =
+              assetMetadata?.userMetadata?.originalFileName ??
+              assetMetadata?.metadata?.originalFileName;
+            if (typeof storedName === 'string' && storedName.trim()) {
+              originalFileName = storedName.trim();
+            }
+          } catch {
+            // Metadata is optional; keep legacy drafts available.
+          }
+        }
+
         return {
           id: order.id,
           shopId: order.shop_id,
           shopName: order.shops?.name || 'Unknown Shop',
           fileName: fileName,
+          originalFileName,
           fileUrl: fileUrl,
           total: order.total,
           updatedAt: order.created_at,
@@ -530,6 +574,9 @@ export class OrdersService {
 
     // 2. Store a normalized PDF so every printer agent receives one format.
     await this.ensureAssetsBucket();
+    const originalFileName =
+      file.originalname.split(/[\\/]/).pop()?.replaceAll('\0', '').trim() ||
+      null;
     const fileName = secureObjectName(
       `${userId}/${order.id}`,
       'application/pdf',
@@ -538,6 +585,7 @@ export class OrdersService {
       .from('assets')
       .upload(fileName, printable.buffer, {
         contentType: 'application/pdf',
+        metadata: originalFileName ? { originalFileName } : undefined,
       });
 
     if (uploadError) {
@@ -547,14 +595,19 @@ export class OrdersService {
     }
 
     // 3. Link the design asset to the newly created order
-    const { error: assetError } = await supabase.from('assets').insert({
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      order_id: order.id,
-
+    const assetBase = {
+      order_id: (order as { id: string }).id,
       file_url: fileName,
       dpi: 300, // Baseline required by application logic
       file_type: 'PDF',
+    };
+    let { error: assetError } = await supabase.from('assets').insert({
+      ...assetBase,
+      original_filename: originalFileName,
     });
+    if (isMissingOriginalFilenameColumn(assetError)) {
+      ({ error: assetError } = await supabase.from('assets').insert(assetBase));
+    }
 
     if (assetError) {
       // Rollback logic could go here if needed
