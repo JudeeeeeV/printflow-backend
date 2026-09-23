@@ -291,16 +291,19 @@ export class OrdersService {
           order.assets.length > 0 &&
           order.assets[0].file_url
         ) {
+          const storedPath = this.supabaseService.storagePath(
+            order.assets[0].file_url,
+            'assets',
+          );
+          const rawName = decodeURIComponent(storedPath.split('/').pop() || '');
+          const match = rawName.match(/-\d{13}-(.+)$/);
+          fileName = (match ? match[1] : rawName) || fileName;
           fileUrl =
             (await this.supabaseService.createSignedStorageUrl(
               'assets',
               order.assets[0].file_url,
               300,
             )) || '';
-          const urlParts = fileUrl.split('/');
-          const rawName = decodeURIComponent(urlParts[urlParts.length - 1]);
-          const match = rawName.match(/-\d{13}-(.+)$/);
-          fileName = match ? match[1] : rawName;
         }
 
         return {
