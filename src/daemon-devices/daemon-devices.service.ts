@@ -195,6 +195,8 @@ export class DaemonDevicesService {
     const devices = (data || []) as unknown as AdminDeviceRecord[];
     return devices.map((device) => ({
       ...device,
+      printers:
+        this.connections.getPrinters(device.id) ?? device.printers ?? [],
       status:
         !device.revoked_at && this.connections.isConnected(device.id)
           ? 'CONNECTED'
@@ -261,12 +263,17 @@ export class DaemonDevicesService {
 
   async updatePrinters(deviceId: string, printers: string[]) {
     const now = new Date().toISOString();
-    await this.supabaseService
+    const { error } = await this.supabaseService
       .getAdminClient()
       .from('daemon_devices')
       .update({ printers, last_seen_at: now, updated_at: now })
       .eq('id', deviceId)
       .is('revoked_at', null);
+    if (error) {
+      throw new InternalServerErrorException(
+        'Failed to save detected printers',
+      );
+    }
   }
 
   private async revoke(deviceId: string, shopId?: string) {
@@ -346,7 +353,9 @@ export class DaemonDevicesService {
       shop_id: device.shop_id,
       name: device.name,
       agent_version: device.agent_version,
-      printers: Array.isArray(device.printers) ? device.printers : [],
+      printers:
+        this.connections.getPrinters(device.id) ??
+        (Array.isArray(device.printers) ? device.printers : []),
       last_seen_at: device.last_seen_at,
       revoked_at: device.revoked_at,
       created_at: device.created_at,

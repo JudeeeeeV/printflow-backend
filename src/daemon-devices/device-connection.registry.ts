@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 
 interface DeviceConnection {
   socketId: string;
+  printers?: string[];
   disconnect: () => void;
   emit: (event: string, payload?: unknown) => void;
 }
@@ -26,6 +27,16 @@ export class DeviceConnectionRegistry {
 
   isConnected(deviceId: string) {
     return this.connections.has(deviceId);
+  }
+
+  setPrinters(deviceId: string, socketId: string, printers: string[]) {
+    const connection = this.connections.get(deviceId);
+    if (connection?.socketId === socketId) connection.printers = [...printers];
+  }
+
+  getPrinters(deviceId: string): string[] | undefined {
+    const printers = this.connections.get(deviceId)?.printers;
+    return printers ? [...printers] : undefined;
   }
 
   disconnect(deviceId: string) {

@@ -127,7 +127,14 @@ supabase/migrations/20260918_cleanup_revoked_daemon_devices.sql
 supabase/migrations/20260919_encrypt_admin_totp.sql
 supabase/migrations/20260919_admin_sessions.sql
 supabase/migrations/20260919_admin_audit_events.sql
+supabase/migrations/20260924020000_print_jobs.sql
 ```
+
+If batch printing fails and the backend logs report `PGRST205` for
+`public.print_jobs`, run `20260924020000_print_jobs.sql` in the Supabase SQL
+Editor for the backend's project. Pushing application code does not apply SQL
+migrations. This repair preserves existing orders and jobs and grants the
+backend access to claim jobs while preventing direct browser access.
 
 For an existing Render Web Service, add `TOTP_ENCRYPTION_KEY` manually under
 **Environment** and give it a stable random value of at least 32 characters.

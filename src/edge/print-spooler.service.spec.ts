@@ -3,6 +3,7 @@ import { PrintSpoolerService } from './print-spooler.service';
 import { EdgeDaemonGateway } from './edge-daemon.gateway';
 import { PrintJobsRepository } from './repositories/print-jobs.repository';
 import { SupabaseService } from '../supabase/supabase.service';
+import { PrintAssetService } from './print-asset.service';
 
 function setup() {
   const gateway = {
@@ -41,15 +42,48 @@ function setup() {
       .fn()
       .mockResolvedValue('https://example.test/signed.pdf'),
   };
+  const printAssets = {
+    prepare: jest.fn().mockResolvedValue('https://example.test/signed.pdf'),
+  };
   const service = new PrintSpoolerService(
     gateway as unknown as EdgeDaemonGateway,
     jobs as unknown as PrintJobsRepository,
     supabase as unknown as SupabaseService,
+    printAssets as unknown as PrintAssetService,
   );
-  return { service, gateway, jobs, supabase };
+  return { service, gateway, jobs, supabase, printAssets, query };
 }
 
 describe('PrintSpoolerService readiness', () => {
+  it('does not claim any jobs if preparing a later file fails', async () => {
+    const { service, jobs, printAssets, query } = setup();
+    query.in.mockResolvedValue({
+      data: ['one', 'two'].map((id) => ({
+        id,
+        state: 'IN_PRODUCTION',
+        paper_size: 'A4',
+        print_color_mode: 'COLOR',
+        assets: [{ file_url: `${id}.png` }],
+      })),
+    });
+    printAssets.prepare
+      .mockResolvedValueOnce('https://example.test/one.pdf')
+      .mockRejectedValueOnce(new BadRequestException('Invalid file'));
+    await expect(
+      service.executeBatch(['one', 'two'], 'shop-1', 'Desk'),
+    ).rejects.toThrow('Invalid file');
+    expect(jobs.claimJob).not.toHaveBeenCalled();
+  });
+
+  it('does not report a successful dispatch when all jobs are already claimed', async () => {
+    const { service, jobs, gateway } = setup();
+    jobs.claimJob.mockResolvedValue(false);
+    await expect(
+      service.executeBatch(['order-1'], 'shop-1', 'Desk'),
+    ).rejects.toThrow(ConflictException);
+    expect(gateway.emitBatchExecute).not.toHaveBeenCalled();
+  });
+
   it('returns an actionable conflict for an offline agent without claiming jobs', async () => {
     const { service, gateway, jobs, supabase } = setup();
     gateway.hasConnectedDaemon.mockReturnValue(false);

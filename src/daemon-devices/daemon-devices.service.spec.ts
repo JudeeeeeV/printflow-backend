@@ -25,10 +25,75 @@ function queryReturning(result: unknown) {
   }
   chain.single = jest.fn(async () => result);
   chain.maybeSingle = jest.fn(async () => result);
+  chain.order = jest.fn(async () => result);
   return chain;
 }
 
 describe('DaemonDevicesService', () => {
+  it('shows live printer reports even when the stored list is empty', async () => {
+    const query = queryReturning({
+      data: [{ ...device, printers: [] }],
+      error: null,
+    });
+    const registry = new DeviceConnectionRegistry();
+    registry.register(device.id, {
+      socketId: 'socket',
+      disconnect: jest.fn(),
+      emit: jest.fn(),
+    });
+    registry.setPrinters(device.id, 'socket', ['EPSON L120 Series']);
+    const service = new DaemonDevicesService(
+      { getAdminClient: () => ({ from: () => query }) } as any,
+      {} as any,
+      registry,
+    );
+    await expect(
+      service.listForShop(device.shop_id, 'MANAGER'),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        printers: ['EPSON L120 Series'],
+        status: 'CONNECTED',
+      }),
+    ]);
+    await expect(service.listAll()).resolves.toEqual([
+      expect.objectContaining({ printers: ['EPSON L120 Series'] }),
+    ]);
+  });
+
+  it('does not replace a live empty report with stale stored printers', async () => {
+    const query = queryReturning({ data: [device], error: null });
+    const registry = new DeviceConnectionRegistry();
+    registry.register(device.id, {
+      socketId: 'socket',
+      disconnect: jest.fn(),
+      emit: jest.fn(),
+    });
+    registry.setPrinters(device.id, 'socket', []);
+    const service = new DaemonDevicesService(
+      { getAdminClient: () => ({ from: () => query }) } as any,
+      {} as any,
+      registry,
+    );
+    await expect(
+      service.listForShop(device.shop_id, 'MANAGER'),
+    ).resolves.toEqual([expect.objectContaining({ printers: [] })]);
+  });
+
+  it('surfaces failed printer persistence instead of silently ignoring it', async () => {
+    const query = queryReturning({});
+    query.is = jest
+      .fn()
+      .mockResolvedValue({ error: { message: 'Database unavailable' } });
+    const service = new DaemonDevicesService(
+      { getAdminClient: () => ({ from: () => query }) } as any,
+      {} as any,
+      new DeviceConnectionRegistry(),
+    );
+    await expect(service.updatePrinters(device.id, ['Desk'])).rejects.toThrow(
+      'Failed to save detected printers',
+    );
+  });
+
   it('accepts a valid short-lived agent identity for an active verified shop', async () => {
     const deviceQuery = queryReturning({ data: device, error: null });
     const shopQuery = queryReturning({

@@ -207,6 +207,7 @@ describe('EdgeDaemonGateway connections', () => {
     const detected = event<string[]>(clerk, 'printers_list');
     agent.emit('daemon_printers_update', { printers: ['Desk'] });
     expect(await detected).toEqual(['Desk']);
+    expect(registry.getPrinters('device-1')).toEqual(['Desk']);
     expect(gateway.getAvailablePrinters('shop-1')).toEqual(['Desk']);
     expect(gateway.getAvailablePrinters('another-shop')).toEqual([]);
     const snapshot = event<string[]>(clerk, 'printers_list');

@@ -146,6 +146,7 @@ export class EdgeDaemonGateway
         this.server.to(`shop_${identity.shopId}`).emit('daemon_status', {
           status: 'CONNECTED',
         });
+        client.emit('agent_command', { type: 'RESCAN_PRINTERS' });
       } catch (error) {
         if (!client.connected) return;
         if (
@@ -351,6 +352,7 @@ export class EdgeDaemonGateway
     }
     this.shopPrinters.set(shopId, data.printers);
     if (deviceId) {
+      this.deviceConnections.setPrinters(deviceId, client.id, data.printers);
       void this.daemonDevices
         .updatePrinters(deviceId, data.printers)
         .catch((error) => {
