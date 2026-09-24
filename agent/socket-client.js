@@ -80,7 +80,7 @@ class AgentSocketClient {
         () => socket.emit('daemon_heartbeat', { agentVersion: AGENT_VERSION }),
         25_000,
       );
-      this.setRepeating(() => void this.scanAndReportPrinters(false), 45_000);
+      this.setRepeating(() => void this.scanAndReportPrinters(false), 3_000);
       this.setTimer(() => void this.connectWithFreshToken(), 12 * 60 * 1000);
     });
 
