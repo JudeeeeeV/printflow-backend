@@ -7,7 +7,7 @@ const execFileAsync = promisify(execFile);
 const PRINTER_SCAN_COMMAND =
   '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); ' +
   'ConvertTo-Json -Compress -InputObject @(' +
-  "Get-CimInstance -ClassName Win32_Printer | Where-Object { -not $_.WorkOffline -and $_.PortName -notmatch 'PORTPROMPT:|nul:|FILE:|SHRFAX:' } | " +
+  "Get-CimInstance -ClassName Win32_Printer | Where-Object { -not $_.WorkOffline -and $_.PrinterStatus -ne 7 -and $_.PortName -notmatch 'PORTPROMPT:|nul:|FILE:|SHRFAX:' } | " +
   'Select-Object -ExpandProperty Name)';
 
 function loadPrinterLibrary() {
