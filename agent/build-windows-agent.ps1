@@ -1,6 +1,6 @@
 param(
     [string]$BackendUrl = 'https://printflow-backend-wen3.onrender.com',
-    [string]$Version = '0.1.5'
+    [string]$Version = '0.1.6'
 )
 
 $ErrorActionPreference = 'Stop'
