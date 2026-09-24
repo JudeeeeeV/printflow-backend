@@ -1,9 +1,10 @@
 import {
+  BadRequestException,
+  ConflictException,
   Injectable,
   InternalServerErrorException,
   Logger,
   NotFoundException,
-  ServiceUnavailableException,
 } from '@nestjs/common';
 import { EdgeDaemonGateway } from './edge-daemon.gateway';
 import { PrintJobsRepository } from './repositories/print-jobs.repository';
@@ -40,8 +41,20 @@ export class PrintSpoolerService {
       throw new NotFoundException('Verified shop not found');
     }
     if (!this.gateway.hasConnectedDaemon(shopId)) {
-      throw new ServiceUnavailableException(
-        'No authenticated print daemon is connected for this shop',
+      throw new ConflictException(
+        'The PrintFlow Agent is offline. Wait for it to reconnect before sending orders.',
+      );
+    }
+
+    const printers = this.gateway.getAvailablePrinters(shopId);
+    if (printers.length === 0) {
+      throw new ConflictException(
+        'The PrintFlow Agent has not reported any printers. Wait for discovery or use Rescan on the Printer Agent page.',
+      );
+    }
+    if (printerName && !printers.includes(printerName)) {
+      throw new BadRequestException(
+        'The selected printer is no longer available. Select a detected printer and try again.',
       );
     }
 
@@ -132,8 +145,9 @@ export class PrintSpoolerService {
             this.printJobsRepo.updateJobStatus(order.id, shopId, 'FAILED'),
           ),
         );
-        throw new ServiceUnavailableException(
-          'The print daemon disconnected before dispatch',
+        for (const order of payload) this.recentlyDispatched.delete(order.id);
+        throw new ConflictException(
+          'The PrintFlow Agent disconnected before dispatch. Wait for it to reconnect, then try again.',
         );
       }
     }

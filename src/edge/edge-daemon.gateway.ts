@@ -8,7 +8,7 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import { Logger } from '@nestjs/common';
-import { Server, Socket } from 'socket.io';
+import { Namespace, Socket } from 'socket.io';
 import { SupabaseService } from '../supabase/supabase.service';
 import { PrintJobsRepository } from './repositories/print-jobs.repository';
 import { DaemonDevicesService } from '../daemon-devices/daemon-devices.service';
@@ -51,7 +51,7 @@ export class EdgeDaemonGateway
   implements OnGatewayConnection, OnGatewayDisconnect
 {
   @WebSocketServer()
-  server: Server;
+  server: Namespace;
 
   private readonly logger = new Logger(EdgeDaemonGateway.name);
   private readonly connectedDaemons = new Map<string, string>();
@@ -65,7 +65,28 @@ export class EdgeDaemonGateway
     private readonly deviceConnections: DeviceConnectionRegistry,
   ) {}
 
-  async handleConnection(client: PrintflowSocket) {
+  handleConnection(client: PrintflowSocket) {
+    // Nest does not await handleConnection before dispatching socket events.
+    // Keep early printer reports and dashboard requests until identity is ready.
+    const ready = this.authenticateConnection(client).catch(
+      (error: unknown) => {
+        const message =
+          error instanceof Error ? error.message : 'unknown error';
+        this.logger.warn(
+          `Socket authentication failed ${client.id}: ${message}`,
+        );
+        client.disconnect(true);
+      },
+    );
+    client.use((_packet, next) => {
+      void ready.then(() => {
+        if (client.connected && client.data.connectionRole) next();
+      });
+    });
+    return ready;
+  }
+
+  private async authenticateConnection(client: PrintflowSocket) {
     const shopIdValue = client.handshake.query.shopId;
     const shopId = typeof shopIdValue === 'string' ? shopIdValue : undefined;
     const connectionRoleValue = client.handshake.query.role;
@@ -90,6 +111,7 @@ export class EdgeDaemonGateway
     if (connectionRole === 'daemon') {
       try {
         const identity = await this.daemonDevices.validateAgentToken(token);
+        if (!client.connected) return;
         if (shopId && shopId !== identity.shopId) {
           this.logger.warn(
             `Rejected daemon with mismatched shop: ${client.id}`,
@@ -104,10 +126,10 @@ export class EdgeDaemonGateway
         void client.join(`shop_${identity.shopId}`);
 
         const previousSocketId = this.connectedDaemons.get(identity.shopId);
-        if (previousSocketId && previousSocketId !== client.id) {
-          this.server.sockets.sockets.get(previousSocketId)?.disconnect(true);
-        }
         this.connectedDaemons.set(identity.shopId, client.id);
+        if (previousSocketId && previousSocketId !== client.id) {
+          this.server.sockets.get(previousSocketId)?.disconnect(true);
+        }
         this.deviceConnections.register(identity.deviceId, {
           socketId: client.id,
           disconnect: () => client.disconnect(true),
@@ -117,6 +139,7 @@ export class EdgeDaemonGateway
           identity.deviceId,
           this.agentVersion(client),
         );
+        if (!client.connected) return;
         this.logger.log(
           `Authenticated printer agent connected for shop ${identity.shopId}: ${identity.deviceName}`,
         );
@@ -124,6 +147,7 @@ export class EdgeDaemonGateway
           status: 'CONNECTED',
         });
       } catch (error) {
+        if (!client.connected) return;
         if (
           shopId &&
           this.legacyDaemonAuthEnabled() &&
@@ -162,6 +186,7 @@ export class EdgeDaemonGateway
         .eq('verification_status', 'VERIFIED')
         .single(),
     ]);
+    if (!client.connected) return;
     const profileRecord = profile as unknown as { role?: unknown } | null;
     if (
       profileError ||
@@ -182,6 +207,7 @@ export class EdgeDaemonGateway
     void client.join(`shop_${shopId}`);
 
     this.logger.log(`Authenticated clerk connected for shop: ${shopId}`);
+    this.handleCheckStatus(client);
   }
 
   handleDisconnect(client: PrintflowSocket) {
@@ -206,15 +232,18 @@ export class EdgeDaemonGateway
 
   hasConnectedDaemon(shopId: string): boolean {
     const socketId = this.connectedDaemons.get(shopId);
-    return Boolean(socketId && this.server.sockets.sockets.has(socketId));
+    return Boolean(socketId && this.server.sockets.get(socketId)?.connected);
+  }
+
+  getAvailablePrinters(shopId: string): string[] {
+    if (!this.hasConnectedDaemon(shopId)) return [];
+    return [...(this.shopPrinters.get(shopId) ?? [])];
   }
 
   emitBatchExecute(shopId: string, payload: unknown): boolean {
     const socketId = this.connectedDaemons.get(shopId);
-    const daemon = socketId
-      ? this.server.sockets.sockets.get(socketId)
-      : undefined;
-    if (!daemon) return false;
+    const daemon = socketId ? this.server.sockets.get(socketId) : undefined;
+    if (!daemon?.connected) return false;
     daemon.emit('batch_execute', payload);
     return true;
   }
@@ -288,13 +317,14 @@ export class EdgeDaemonGateway
     if (client.data.connectionRole !== 'clerk') return;
     const shopId = client.data.shopId;
     if (!shopId) return;
-    const isOnline = this.connectedDaemons.has(shopId);
+    const isOnline = this.hasConnectedDaemon(shopId);
     client.emit('daemon_status', {
       status: isOnline ? 'CONNECTED' : 'OFFLINE',
     });
-    if (isOnline && this.shopPrinters.has(shopId)) {
-      client.emit('printers_list', this.shopPrinters.get(shopId));
-    }
+    client.emit(
+      'printers_list',
+      isOnline ? (this.shopPrinters.get(shopId) ?? []) : [],
+    );
   }
 
   @SubscribeMessage('daemon_printers_update')
@@ -397,6 +427,7 @@ export class EdgeDaemonGateway
         .eq('verification_status', 'VERIFIED')
         .single(),
     ]);
+    if (!client.connected) return false;
     const profileRecord = profile as unknown as { role?: unknown } | null;
     if (
       profileError ||
@@ -414,10 +445,10 @@ export class EdgeDaemonGateway
     client.data.userRole = profileRecord.role;
     void client.join(`shop_${shopId}`);
     const previousSocketId = this.connectedDaemons.get(shopId);
-    if (previousSocketId && previousSocketId !== client.id) {
-      this.server.sockets.sockets.get(previousSocketId)?.disconnect(true);
-    }
     this.connectedDaemons.set(shopId, client.id);
+    if (previousSocketId && previousSocketId !== client.id) {
+      this.server.sockets.get(previousSocketId)?.disconnect(true);
+    }
     this.logger.warn(`Legacy development daemon connected for shop: ${shopId}`);
     this.server.to(`shop_${shopId}`).emit('daemon_status', {
       status: 'CONNECTED',
