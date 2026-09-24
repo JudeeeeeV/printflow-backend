@@ -3,8 +3,10 @@ import {
   BadRequestException,
   InternalServerErrorException,
   UnauthorizedException,
+  ServiceUnavailableException,
   Logger,
 } from '@nestjs/common';
+import { isAuthRetryableFetchError } from '@supabase/supabase-js';
 import { SupabaseService } from '../supabase/supabase.service';
 import { LoginDto } from './dto/login.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
@@ -19,12 +21,28 @@ export class AuthService {
     const { email, password } = loginDto;
     const supabase = this.supabaseService.getAdminClient();
 
-    const { data: authData, error: authError } =
-      await supabase.auth.signInWithPassword({
+    let authResult;
+    try {
+      authResult = await supabase.auth.signInWithPassword({
         email,
         password,
       });
+    } catch (error) {
+      if (isAuthRetryableFetchError(error)) {
+        throw new ServiceUnavailableException(
+          'Sign-in service unavailable. Please try again.',
+        );
+      }
+      throw error;
+    }
 
+    const { data: authData, error: authError } = authResult;
+
+    if (isAuthRetryableFetchError(authError)) {
+      throw new ServiceUnavailableException(
+        'Sign-in service unavailable. Please try again.',
+      );
+    }
     if (authError) throw new UnauthorizedException('Invalid credentials');
 
     if (!authData.user.email_confirmed_at) {

@@ -1,3 +1,5 @@
+import { ServiceUnavailableException } from '@nestjs/common';
+import { AuthRetryableFetchError } from '@supabase/supabase-js';
 import { AuthService } from './auth.service';
 import { SupabaseService } from '../supabase/supabase.service';
 
@@ -69,4 +71,34 @@ describe('AuthService', () => {
     ).rejects.toThrow('Invalid credentials');
     expect(getAdminClient).toHaveBeenCalledTimes(1);
   });
+
+  it.each(['returned', 'thrown'])(
+    'reports unavailable auth service when a network error is %s',
+    async (failureMode) => {
+      const networkError = new AuthRetryableFetchError('Failed to fetch', 0);
+      const signInWithPassword = jest.fn();
+      if (failureMode === 'returned') {
+        signInWithPassword.mockResolvedValue({
+          data: { user: null, session: null },
+          error: networkError,
+        });
+      } else {
+        signInWithPassword.mockRejectedValue(networkError);
+      }
+      const getAdminClient = jest.fn().mockReturnValue({
+        auth: { signInWithPassword },
+      });
+      const service = new AuthService({
+        getAdminClient,
+      } as unknown as SupabaseService);
+
+      await expect(
+        service.login({
+          email: 'student@example.com',
+          password: 'GoodPassword1!',
+        }),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(getAdminClient).toHaveBeenCalledTimes(1);
+    },
+  );
 });
