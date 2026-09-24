@@ -24,6 +24,8 @@ import {
   secureUploadOptions,
 } from '../common/upload-security';
 import { Throttle } from '@nestjs/throttler';
+import { UpdateShopDto } from './dto/update-shop.dto';
+import { MAX_SHOP_PHOTO_BYTES } from './shop-photo';
 
 @Controller('shops')
 export class ShopsController {
@@ -45,12 +47,28 @@ export class ShopsController {
   @Patch('me')
   @UseGuards(SupabaseAuthGuard, RolesGuard)
   @Roles('CLERK', 'MANAGER')
-  async updateMyShop(
-    @Req() req: Request,
-    @Body() body: { name?: string; location?: string; description?: string },
-  ) {
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  async updateMyShop(@Req() req: Request, @Body() body: UpdateShopDto) {
     const userId = (req as any).user.id;
     return this.shopsService.updateShop(userId, body);
+  }
+
+  @Post('me/photo')
+  @UseGuards(SupabaseAuthGuard, RolesGuard)
+  @Roles('CLERK', 'MANAGER')
+  @Throttle({ default: { limit: 10, ttl: 3_600_000 } })
+  @UseInterceptors(
+    FileInterceptor('photo', {
+      ...secureUploadOptions(IMAGE_MIME_TYPES, MAX_SHOP_PHOTO_BYTES),
+      limits: { fileSize: MAX_SHOP_PHOTO_BYTES, files: 1, fields: 0 },
+    }),
+  )
+  async uploadShopPhoto(
+    @Req() req: Request & { user: { id: string } },
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file) throw new BadRequestException('Shop photo is required.');
+    return this.shopsService.uploadShopPhoto(req.user.id, file);
   }
 
   @Post('verify')

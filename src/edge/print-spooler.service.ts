@@ -1,30 +1,33 @@
 import {
+  BadRequestException,
+  ConflictException,
   Injectable,
   InternalServerErrorException,
   Logger,
   NotFoundException,
-  ServiceUnavailableException,
 } from '@nestjs/common';
 import { EdgeDaemonGateway } from './edge-daemon.gateway';
 import { PrintJobsRepository } from './repositories/print-jobs.repository';
 import { SupabaseService } from '../supabase/supabase.service';
+import { PrintAssetService } from './print-asset.service';
 
 interface PrintOrder {
   id: string;
   state: string;
   print_color_mode: string;
+  paper_size: string;
   assets: Array<{ file_url: string }>;
 }
 
 @Injectable()
 export class PrintSpoolerService {
   private readonly logger = new Logger(PrintSpoolerService.name);
-  private readonly recentlyDispatched = new Map<string, number>();
 
   constructor(
     private readonly gateway: EdgeDaemonGateway,
     private readonly printJobsRepo: PrintJobsRepository,
     private readonly supabaseService: SupabaseService,
+    private readonly printAssets: PrintAssetService,
   ) {}
 
   async executeBatch(orderIds: string[], shopId: string, printerName?: string) {
@@ -40,8 +43,20 @@ export class PrintSpoolerService {
       throw new NotFoundException('Verified shop not found');
     }
     if (!this.gateway.hasConnectedDaemon(shopId)) {
-      throw new ServiceUnavailableException(
-        'No authenticated print daemon is connected for this shop',
+      throw new ConflictException(
+        'The PrintFlow Agent is offline. Wait for it to reconnect before sending orders.',
+      );
+    }
+
+    const printers = this.gateway.getAvailablePrinters(shopId);
+    if (printers.length === 0) {
+      throw new ConflictException(
+        'The PrintFlow Agent has not reported any printers. Wait for discovery or use Rescan on the Printer Agent page.',
+      );
+    }
+    if (printerName && !printers.includes(printerName)) {
+      throw new BadRequestException(
+        'The selected printer is no longer available. Select a detected printer and try again.',
       );
     }
 
@@ -50,7 +65,7 @@ export class PrintSpoolerService {
     // Validate that orders are IN_PRODUCTION and belong to this shop
     const { data: orders, error } = await supabase
       .from('orders')
-      .select('id, state, print_color_mode, assets(file_url)')
+      .select('id, state, print_color_mode, paper_size, assets(file_url)')
       .eq('shop_id', shopId)
       .in('id', orderIds);
 
@@ -60,15 +75,9 @@ export class PrintSpoolerService {
       );
     }
 
-    const cutoff = Date.now() - 10 * 60 * 1000;
-    for (const [orderId, dispatchedAt] of this.recentlyDispatched) {
-      if (dispatchedAt < cutoff) this.recentlyDispatched.delete(orderId);
-    }
     const orderRows = orders as unknown as PrintOrder[];
     const validOrders = orderRows.filter(
-      (order) =>
-        order.state === 'IN_PRODUCTION' &&
-        !this.recentlyDispatched.has(order.id),
+      (order) => order.state === 'IN_PRODUCTION',
     );
     if (validOrders.length === 0) {
       throw new NotFoundException(
@@ -76,7 +85,7 @@ export class PrintSpoolerService {
       );
     }
 
-    const payload: Array<{
+    const prepared: Array<{
       id: string;
       file_url: string;
       print_color_mode: string;
@@ -92,30 +101,32 @@ export class PrintSpoolerService {
         continue;
       }
 
-      const signedUrl = await this.supabaseService.createSignedStorageUrl(
-        'assets',
+      const signedUrl = await this.printAssets.prepare(
         assetUrl,
-        3600,
+        shopId,
+        order.id,
+        order.paper_size,
       );
-      if (!signedUrl) {
-        this.logger.warn(
-          `Order ${order.id} asset could not be signed, skipping.`,
-        );
-        continue;
-      }
 
-      const claimed = await this.printJobsRepo.claimJob(order.id, shopId);
-      if (!claimed) {
-        this.logger.warn(`Order ${order.id} already has an active print job.`);
-        continue;
-      }
-      this.recentlyDispatched.set(order.id, Date.now());
-
-      payload.push({
+      prepared.push({
         id: order.id,
         file_url: signedUrl,
         print_color_mode: order.print_color_mode,
       });
+    }
+
+    // Prepare every file before claiming jobs so a conversion failure cannot
+    // leave earlier orders queued without ever dispatching them.
+    const payload: typeof prepared = [];
+    for (const order of prepared) {
+      if (await this.printJobsRepo.claimJob(order.id, shopId)) {
+        payload.push(order);
+      }
+    }
+    if (payload.length === 0) {
+      throw new ConflictException(
+        'No printable orders are available, or the selected orders already have active print jobs.',
+      );
     }
 
     if (payload.length > 0) {
@@ -132,8 +143,8 @@ export class PrintSpoolerService {
             this.printJobsRepo.updateJobStatus(order.id, shopId, 'FAILED'),
           ),
         );
-        throw new ServiceUnavailableException(
-          'The print daemon disconnected before dispatch',
+        throw new ConflictException(
+          'The PrintFlow Agent disconnected before dispatch. Wait for it to reconnect, then try again.',
         );
       }
     }
