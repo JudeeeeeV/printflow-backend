@@ -101,6 +101,23 @@ The Microsoft client secret belongs in Supabase, not in these environment variab
 Production needs `NODE_ENV=production`, an HTTPS `MICROSOFT_CALLBACK_URL`, and the
 actual HTTPS frontend origin in `FRONTEND_URL`.
 
+For the deployed Render backend, open the service's **Environment** tab and set:
+
+```dotenv
+MICROSOFT_TENANT_ID=823cde44-4433-456d-b801-bdf0ab3d41fc
+MICROSOFT_CALLBACK_URL=https://printflow-backend-wen3.onrender.com/auth/microsoft/callback
+FRONTEND_URL=https://printflow-frontend-aje0.onrender.com
+SUPABASE_ANON_KEY=YOUR_SUPABASE_PUBLISHABLE_OR_LEGACY_ANON_KEY
+```
+
+Use the Supabase project's publishable key or legacy `anon` key for
+`SUPABASE_ANON_KEY`, not the Microsoft client secret or Supabase service-role key.
+The frontend's `VITE_SUPABASE_ANON_KEY` uses the corresponding project key, but
+Render does not automatically share environment variables between services.
+Keep the existing `SUPABASE_URL` and `JWT_SECRET` values. Save and redeploy the
+backend after changing its environment. Local `.env` edits are not uploaded to
+Render, and a localhost callback is rejected when `NODE_ENV=production`.
+
 For a fully local test, set frontend `VITE_API_URL=http://localhost:3000` and restart
 Vite. Otherwise the frontend defaults to the deployed backend. Use `localhost`
 consistently rather than mixing it with `127.0.0.1`. Rebuild/redeploy both apps for
@@ -131,8 +148,11 @@ and API domains or a same-origin API proxy; this also affects existing password 
 
 ## Troubleshooting
 
-- **Not configured:** check the tenant GUID, anon/publishable key, callback URL and
-  existing JWT secret, then restart the backend.
+- **Not configured:** the backend rejected its configuration before contacting
+  Microsoft. Check the tenant GUID, `SUPABASE_ANON_KEY`, HTTPS callback URL and
+  existing JWT secret in the environment of the backend actually serving the
+  request (Render for the deployed site), then save and redeploy. Do not change
+  the Microsoft client secret to fix this error.
 - **Provider is not enabled:** enable Azure in Supabase and save its settings.
 - **AADSTS50011:** Microsoft's Web redirect URI must be Supabase's callback URL.
 - **Admin approval required / cannot register:** ask CIT IT to register/approve the app.

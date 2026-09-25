@@ -9,7 +9,13 @@ services:
         value: production
       - key: SUPABASE_URL
         sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: MICROSOFT_TENANT_ID
+        sync: false
+      - key: MICROSOFT_CALLBACK_URL
         sync: false
       - key: JWT_SECRET
         generateValue: true
