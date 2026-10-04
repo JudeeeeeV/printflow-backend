@@ -320,6 +320,24 @@ export class ShopsService {
     };
   }
 
+  async removeGcashQr(shopId: string) {
+    const { error } = await this.supabaseService
+      .getAdminClient()
+      .from('shops')
+      .update({ gcash_qr_url: null })
+      .eq('id', shopId)
+      .select('id')
+      .single();
+
+    if (error) {
+      throw new InternalServerErrorException(
+        `Failed to remove GCash QR: ${error.message}`,
+      );
+    }
+
+    return { gcash_qr_url: null };
+  }
+
   async uploadGcashQr(shopId: string, file: Express.Multer.File) {
     assertFileSignature(file, IMAGE_MIME_TYPES);
     await this.ensureGcashQrsBucket();
