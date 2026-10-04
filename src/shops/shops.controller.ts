@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Body,
   UseGuards,
   Req,
@@ -113,5 +114,13 @@ export class ShopsController {
 
     const userId = (req as any).user.id;
     return this.shopsService.uploadGcashQr(userId, file);
+  }
+
+  @Delete('gcash-qr')
+  @UseGuards(SupabaseAuthGuard, RolesGuard)
+  @Roles('CLERK', 'MANAGER')
+  @Throttle({ default: { limit: 5, ttl: 3_600_000 } })
+  async removeGcashQr(@Req() req: Request & { user: { id: string } }) {
+    return this.shopsService.removeGcashQr(req.user.id);
   }
 }
