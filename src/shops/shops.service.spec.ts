@@ -17,6 +17,7 @@ describe('Shop locations', () => {
   const from = jest.fn(() => query);
   const service = new ShopsService({
     getAdminClient: () => ({ from }),
+    createSignedStorageUrls: jest.fn().mockResolvedValue(new Map()),
   } as unknown as SupabaseService);
 
   beforeEach(() => jest.clearAllMocks());

@@ -89,6 +89,42 @@ describe('Shop location API authorization', () => {
 
   const pin = { latitude: 10.295, longitude: 123.88 };
 
+  describe('GCash QR removal', () => {
+    it.each([
+      ['', 401],
+      ['invalid', 401],
+      ['student', 403],
+    ] as const)('blocks removal for session %s', async (token, status) => {
+      await request(app.getHttpServer())
+        .delete('/shops/gcash-qr')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(status);
+      expect(writes).toEqual([]);
+    });
+
+    it.each(['shop-a', 'shop-b'])('clears only the authenticated shop %s', async (token) => {
+      rows['shop-a'].gcash_qr_url = 'shop-a/qr.png';
+      rows['shop-b'].gcash_qr_url = 'shop-b/qr.png';
+      const other = token === 'shop-a' ? 'shop-b' : 'shop-a';
+      await request(app.getHttpServer())
+        .delete('/shops/gcash-qr')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ shopId: other })
+        .expect(200, { gcash_qr_url: null });
+      expect(writes).toEqual([token]);
+      expect(rows[token].gcash_qr_url).toBeNull();
+      expect(rows[other].gcash_qr_url).toBe(`${other}/qr.png`);
+    });
+
+    it('returns 404 when the account has no shop', async () => {
+      await request(app.getHttpServer())
+        .delete('/shops/gcash-qr')
+        .set('Authorization', 'Bearer no-shop')
+        .expect(404);
+      expect(writes).toEqual([]);
+    });
+  });
+
   describe('storefront photo upload', () => {
     let upload: jest.SpyInstance;
     const photo = Buffer.from('89504e470d0a1a0a', 'hex');

@@ -14,6 +14,7 @@ import {
   USER_REFRESH_COOKIE,
 } from './auth/auth-cookies';
 import { GlobalExceptionFilter } from './common/global-exception.filter';
+import { configuredTrustProxy } from './common/trust-proxy';
 
 // Force IPv4 globally for DNS resolution to prevent ENETUNREACH on platforms that lack IPv6 outbound
 dns.setDefaultResultOrder('ipv4first');
@@ -84,10 +85,10 @@ async function bootstrap() {
 
   const expressApp = app.getHttpAdapter().getInstance() as unknown as {
     disable(name: string): void;
-    set(name: string, value: number): void;
+    set(name: string, value: false | number | string[]): void;
   };
   expressApp.disable('x-powered-by');
-  expressApp.set('trust proxy', 1);
+  expressApp.set('trust proxy', configuredTrustProxy());
   app.enableShutdownHooks();
 
   const port = process.env.PORT || 3000;

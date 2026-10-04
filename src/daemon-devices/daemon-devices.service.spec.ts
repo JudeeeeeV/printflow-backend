@@ -110,6 +110,7 @@ describe('DaemonDevicesService', () => {
         deviceId: device.id,
         shopId: device.shop_id,
         role: 'daemon',
+        exp: Math.floor(Date.now() / 1000) + 900,
       })),
     };
     const service = new DaemonDevicesService(
@@ -122,6 +123,7 @@ describe('DaemonDevicesService', () => {
       deviceId: device.id,
       shopId: device.shop_id,
       deviceName: device.name,
+      expiresAt: expect.any(Number),
     });
     expect(jwtService.verifyAsync).toHaveBeenCalledWith(
       'signed-token',

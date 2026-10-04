@@ -52,9 +52,26 @@ export class AdminService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    // Temporary token to be used for 2FA verification/setup
+    const challengeId = randomUUID();
+    const { error: challengeError } = await supabase
+      .from('admin_login_challenges')
+      .insert({
+        admin_id: admin.id,
+        token_id_hash: this.hashTokenId(challengeId),
+        setup: !admin.is_2fa_enabled,
+        expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
+      });
+    if (challengeError)
+      throw new InternalServerErrorException(
+        'Failed to create login challenge',
+      );
     const tempToken = this.jwtService.sign(
-      { sub: admin.id, email: admin.email, tokenType: 'admin-temp' },
+      {
+        sub: admin.id,
+        email: admin.email,
+        tokenType: 'admin-temp',
+        jti: challengeId,
+      },
       { expiresIn: '15m' },
     );
 
@@ -67,7 +84,7 @@ export class AdminService {
       const qrCodeUrl = await qrcode.toDataURL(otpauth!);
 
       // Store the seed with application-level authenticated encryption.
-      const { error: secretError } = await supabase
+      const { data: secretSaved, error: secretError } = await supabase
         .from('admins')
         .update({
           two_factor_secret: null,
@@ -75,8 +92,11 @@ export class AdminService {
             secret.base32,
           ),
         })
-        .eq('id', admin.id);
-      if (secretError) {
+        .eq('id', admin.id)
+        .eq('is_2fa_enabled', false)
+        .select('id')
+        .maybeSingle();
+      if (secretError || !secretSaved) {
         throw new InternalServerErrorException('Failed to initialize 2FA');
       }
 
@@ -94,45 +114,39 @@ export class AdminService {
     };
   }
 
-  async setup2FA(adminId: string, token: string) {
-    const supabase = this.supabaseService.getAdminClient();
-    const { data: admin } = await supabase
-      .from('admins')
-      .select('*')
-      .eq('id', adminId)
-      .single();
-
-    const secret = admin ? this.readTotpSecret(admin) : null;
-    if (!admin || !secret) {
-      throw new BadRequestException('Invalid state');
-    }
-
-    const isValid = speakeasy.totp.verify({
-      secret,
-      encoding: 'base32',
-      token,
-      window: 1,
-    });
-    if (!isValid) {
-      throw new UnauthorizedException('Invalid TOTP token');
-    }
-
-    // Enable 2FA
-    const { error: enableError } = await supabase
-      .from('admins')
-      .update({ is_2fa_enabled: true })
-      .eq('id', adminId);
-    if (enableError) {
-      throw new InternalServerErrorException('Failed to enable 2FA');
-    }
-
-    // Issue full token
-    const accessToken = await this.issueAccessToken(admin.id, admin.email);
-    return { access_token: accessToken };
+  setup2FA(adminId: string, token: string, challengeId: string) {
+    return this.complete2FA(adminId, token, challengeId, true);
   }
 
-  async verify2FA(adminId: string, token: string) {
+  verify2FA(adminId: string, token: string, challengeId: string) {
+    return this.complete2FA(adminId, token, challengeId, false);
+  }
+
+  private async complete2FA(
+    adminId: string,
+    token: string,
+    challengeId: string,
+    setup: boolean,
+  ) {
     const supabase = this.supabaseService.getAdminClient();
+    if (!challengeId)
+      throw new UnauthorizedException('Login challenge is missing');
+    const challengeHash = this.hashTokenId(challengeId);
+    const { data: reserved, error: reserveError } = await supabase.rpc(
+      'reserve_admin_2fa_attempt',
+      {
+        p_admin_id: adminId,
+        p_challenge_hash: challengeHash,
+      },
+    );
+    if (reserveError)
+      throw new InternalServerErrorException(
+        'Failed to validate login challenge',
+      );
+    if (reserved !== true)
+      throw new UnauthorizedException(
+        'Login challenge expired, consumed, or locked. Sign in again.',
+      );
     const { data: admin } = await supabase
       .from('admins')
       .select('*')
@@ -140,35 +154,54 @@ export class AdminService {
       .single();
 
     const secret = admin ? this.readTotpSecret(admin) : null;
-    if (!admin || !secret || !admin.is_2fa_enabled) {
+    if (!admin || !secret || Boolean(admin.is_2fa_enabled) === setup) {
       throw new BadRequestException('Invalid state');
     }
 
-    const isValid = speakeasy.totp.verify({
+    const time = Math.floor(Date.now() / 1000);
+    const verified = speakeasy.totp.verifyDelta({
       secret,
       encoding: 'base32',
       token,
       window: 1,
+      time,
     });
-    if (!isValid) {
+    if (!verified) {
       throw new UnauthorizedException('Invalid TOTP token');
     }
 
-    if (!admin.two_factor_secret_encrypted && admin.two_factor_secret) {
-      const { error: migrationError } = await supabase
-        .from('admins')
-        .update({
-          two_factor_secret: null,
-          two_factor_secret_encrypted: this.totpEncryption.encrypt(secret),
-        })
-        .eq('id', admin.id);
-      if (migrationError) {
-        throw new InternalServerErrorException('Failed to secure 2FA settings');
-      }
-    }
-
-    // Issue full token
-    const accessToken = await this.issueAccessToken(admin.id, admin.email);
+    const tokenId = randomUUID();
+    const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
+    // Sign before committing so a signing failure cannot consume a challenge.
+    const accessToken = this.jwtService.sign({
+      sub: admin.id,
+      email: admin.email,
+      role: 'ADMIN',
+      tokenType: 'admin-access',
+      jti: tokenId,
+    });
+    const { data: completed, error: completeError } = await supabase.rpc(
+      'complete_admin_2fa',
+      {
+        p_admin_id: adminId,
+        p_challenge_hash: challengeHash,
+        p_totp_step: Math.floor(time / 30) + verified.delta,
+        p_setup: setup,
+        p_expected_secret:
+          admin.two_factor_secret_encrypted || admin.two_factor_secret,
+        p_encrypted_secret:
+          admin.two_factor_secret_encrypted ||
+          this.totpEncryption.encrypt(secret),
+        p_session_hash: this.hashTokenId(tokenId),
+        p_session_expires_at: expiresAt,
+      },
+    );
+    if (completeError)
+      throw new InternalServerErrorException('Failed to complete 2FA');
+    if (completed !== true)
+      throw new UnauthorizedException(
+        'This code or login challenge was already used or changed. Sign in again.',
+      );
     return { access_token: accessToken };
   }
 
@@ -198,32 +231,8 @@ export class AdminService {
       .eq('token_id_hash', tokenIdHash);
   }
 
-  private async issueAccessToken(
-    adminId: string,
-    email: string,
-  ): Promise<string> {
-    const tokenId = randomUUID();
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1_000).toISOString();
-    const { error } = await this.supabaseService
-      .getAdminClient()
-      .from('admin_sessions')
-      .insert({
-        admin_id: adminId,
-        token_id_hash: createHash('sha256')
-          .update(tokenId, 'utf8')
-          .digest('hex'),
-        expires_at: expiresAt,
-      });
-    if (error) {
-      throw new InternalServerErrorException('Failed to create admin session');
-    }
-    return this.jwtService.sign({
-      sub: adminId,
-      email,
-      role: 'ADMIN',
-      tokenType: 'admin-access',
-      jti: tokenId,
-    });
+  private hashTokenId(tokenId: string): string {
+    return createHash('sha256').update(tokenId, 'utf8').digest('hex');
   }
 
   async getPendingShops() {

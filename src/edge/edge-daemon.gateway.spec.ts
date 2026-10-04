@@ -35,6 +35,7 @@ describe('EdgeDaemonGateway connections', () => {
     shopId: 'shop-1',
     deviceId: 'device-1',
     deviceName: 'Desk',
+    expiresAt: Date.now() + 60_000,
   };
   const devices = {
     validateAgentToken: jest.fn(),
@@ -102,7 +103,12 @@ describe('EdgeDaemonGateway connections', () => {
       reconnection: false,
       transports: ['websocket'],
       query: { role, shopId: 'shop-1' },
-      auth: { token: 'test-token' },
+      auth: {
+        token:
+          role === 'clerk'
+            ? `test.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')}.test`
+            : 'test-token',
+      },
     });
     clients.push(socket);
     return socket;

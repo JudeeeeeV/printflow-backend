@@ -1,0 +1,6 @@
+{
+  "rootDir": "..",
+  "testEnvironment": "node",
+  "testMatch": ["<rootDir>/test/security-review-20260925.spec.ts"],
+  "transform": { "^.+\\.ts$": "ts-jest" }
+}

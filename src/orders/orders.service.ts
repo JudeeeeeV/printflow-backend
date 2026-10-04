@@ -4,6 +4,7 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  ConflictException,
   Logger,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
@@ -237,6 +238,18 @@ export class OrdersService {
       .from('orders')
       .select('*, payment_receipts(*), assets(*)')
       .eq('shop_id', shopId)
+      .in('state', [
+        'OPEN_INQUIRY',
+        'PROOF_APPROVED',
+        'AWAITING_PAYMENT',
+        'AWAITING_PAYMENT_VERIFICATION',
+        'ESCALATED_DISPUTE',
+        'IN_PRODUCTION',
+        'PRINTED',
+        'READY_FOR_PICKUP',
+        'COMPLETED',
+        'EXPIRED',
+      ])
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -247,13 +260,29 @@ export class OrdersService {
     const orders = data || [];
     const clientIds = [...new Set(orders.map((order) => order.client_id))];
     if (!clientIds.length) return [];
-    const [{ data: clients, error: clientsError }, assets, receipts] = await Promise.all([
-      supabase.from('users').select('id, first_name, last_name').in('id', clientIds),
-      this.supabaseService.createSignedStorageUrls('assets', orders.flatMap(order =>
-        (order.assets || []).map((asset: { file_url: string }) => asset.file_url))),
-      this.supabaseService.createSignedStorageUrls('receipts', orders.flatMap(order =>
-        (order.payment_receipts || []).map((receipt: { receipt_url: string }) => receipt.receipt_url))),
-    ]);
+    const [{ data: clients, error: clientsError }, assets, receipts] =
+      await Promise.all([
+        supabase
+          .from('users')
+          .select('id, first_name, last_name')
+          .in('id', clientIds),
+        this.supabaseService.createSignedStorageUrls(
+          'assets',
+          orders.flatMap((order) =>
+            (order.assets || []).map(
+              (asset: { file_url: string }) => asset.file_url,
+            ),
+          ),
+        ),
+        this.supabaseService.createSignedStorageUrls(
+          'receipts',
+          orders.flatMap((order) =>
+            (order.payment_receipts || []).map(
+              (receipt: { receipt_url: string }) => receipt.receipt_url,
+            ),
+          ),
+        ),
+      ]);
     if (clientsError) {
       throw new InternalServerErrorException('Failed to fetch client names.');
     }
@@ -264,15 +293,19 @@ export class OrdersService {
       ]),
     );
     return orders.map((order) => ({
-        ...order,
-        client_name: names.get(order.client_id) || null,
-        assets: (order.assets || []).map((asset: { file_url: string }) => ({
-          ...asset, file_url: assets.get(asset.file_url) || null,
-        })),
-        payment_receipts: (order.payment_receipts || []).map((receipt: { receipt_url: string }) => ({
-          ...receipt, receipt_url: receipts.get(receipt.receipt_url) || null,
-        })),
-      }));
+      ...order,
+      client_name: names.get(order.client_id) || null,
+      assets: (order.assets || []).map((asset: { file_url: string }) => ({
+        ...asset,
+        file_url: assets.get(asset.file_url) || null,
+      })),
+      payment_receipts: (order.payment_receipts || []).map(
+        (receipt: { receipt_url: string }) => ({
+          ...receipt,
+          receipt_url: receipts.get(receipt.receipt_url) || null,
+        }),
+      ),
+    }));
   }
 
   async getOrder(userId: string, orderId: string) {
@@ -409,7 +442,7 @@ export class OrdersService {
 
     const { data: order, error: fetchError } = await supabase
       .from('orders')
-      .select('state')
+      .select('state, draft_version')
       .eq('id', draftId)
       .eq('client_id', userId)
       .single();
@@ -448,12 +481,16 @@ export class OrdersService {
       .eq('id', draftId)
       .eq('client_id', userId)
       .eq('state', 'DRAFT')
+      .eq('draft_version', order.draft_version)
       .select('id')
       .maybeSingle();
 
-    if (updateError || !updatedDraft) {
-      throw new InternalServerErrorException(
-        'Failed to update draft because it changed concurrently',
+    if (updateError) {
+      throw new InternalServerErrorException('Failed to update draft.');
+    }
+    if (!updatedDraft) {
+      throw new ConflictException(
+        'This draft changed while you were editing. Reload it and try again.',
       );
     }
 
@@ -465,7 +502,7 @@ export class OrdersService {
 
     const { data: order, error: fetchError } = await supabase
       .from('orders')
-      .select('state, shop_id, paper_size, print_color_mode')
+      .select('state, shop_id, paper_size, print_color_mode, draft_version')
       .eq('id', draftId)
       .eq('client_id', userId)
       .single();
@@ -505,12 +542,16 @@ export class OrdersService {
       .eq('id', draftId)
       .eq('client_id', userId)
       .eq('state', 'DRAFT')
+      .eq('draft_version', order.draft_version)
       .select('id')
       .maybeSingle();
 
-    if (updateError || !submittedDraft) {
-      throw new InternalServerErrorException(
-        'Failed to submit draft because it changed concurrently',
+    if (updateError) {
+      throw new InternalServerErrorException('Failed to submit draft.');
+    }
+    if (!submittedDraft) {
+      throw new ConflictException(
+        'This draft changed while you were submitting. Review it and try again.',
       );
     }
 

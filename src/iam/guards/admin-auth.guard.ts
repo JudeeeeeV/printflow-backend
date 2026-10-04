@@ -69,25 +69,36 @@ export class AdminAuthGuard implements CanActivate {
 
       if (
         !payload.sub ||
-        (requiredTokenType === 'admin-access' && !payload.jti) ||
+        !payload.jti ||
         payload.tokenType !== requiredTokenType ||
         (requiredTokenType === 'admin-access' && payload.role !== 'ADMIN')
       ) {
         throw new UnauthorizedException('Invalid admin token type');
       }
 
-      if (requiredTokenType === 'admin-access') {
+      {
         const tokenIdHash = createHash('sha256')
           .update(payload.jti!, 'utf8')
           .digest('hex');
         const { data: session, error: sessionError } =
           await this.supabaseService
             .getAdminClient()
-            .from('admin_sessions')
-            .select('id')
+            .from(
+              requiredTokenType === 'admin-access'
+                ? 'admin_sessions'
+                : 'admin_login_challenges',
+            )
+            .select(
+              requiredTokenType === 'admin-access' ? 'id' : 'token_id_hash',
+            )
             .eq('admin_id', payload.sub)
             .eq('token_id_hash', tokenIdHash)
-            .is('revoked_at', null)
+            .is(
+              requiredTokenType === 'admin-access'
+                ? 'revoked_at'
+                : 'consumed_at',
+              null,
+            )
             .gt('expires_at', new Date().toISOString())
             .maybeSingle();
         if (sessionError || !session) {

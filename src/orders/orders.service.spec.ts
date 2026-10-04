@@ -12,6 +12,7 @@ describe('OrdersService.getShopOrders client names', () => {
     const orderQuery = {
       select: jest.fn().mockReturnThis(),
       eq: jest.fn().mockReturnThis(),
+      in: jest.fn().mockReturnThis(),
       order: jest.fn().mockResolvedValue({ data: orders, error: null }),
     };
     const profileQuery = {

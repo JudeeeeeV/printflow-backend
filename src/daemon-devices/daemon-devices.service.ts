@@ -21,6 +21,7 @@ interface AgentJwtPayload {
   deviceId: string;
   role: 'daemon';
   aud?: string | string[];
+  exp?: number;
 }
 
 interface DeviceRecord {
@@ -147,7 +148,9 @@ export class DaemonDevicesService {
       payload.role !== 'daemon' ||
       !payload.deviceId ||
       payload.sub !== payload.deviceId ||
-      !payload.shopId
+      !payload.shopId ||
+      !Number.isSafeInteger(payload.exp) ||
+      payload.exp! * 1000 <= Date.now()
     ) {
       throw new UnauthorizedException('Invalid printer-agent identity');
     }
@@ -161,6 +164,7 @@ export class DaemonDevicesService {
       deviceId: device.id,
       shopId: device.shop_id,
       deviceName: device.name,
+      expiresAt: payload.exp! * 1000,
     };
   }
 

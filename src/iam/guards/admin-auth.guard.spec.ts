@@ -36,7 +36,7 @@ describe('AdminAuthGuard', () => {
     const supabaseService = {
       getAdminClient: () => ({
         from: (table: string) =>
-          table === 'admin_sessions' ? sessionChain : adminChain,
+          table === 'admins' ? adminChain : sessionChain,
       }),
     };
     return {
@@ -46,6 +46,7 @@ describe('AdminAuthGuard', () => {
         supabaseService as any,
       ),
       reflector,
+      sessionChain,
     };
   }
 
@@ -91,5 +92,44 @@ describe('AdminAuthGuard', () => {
         contextFor({ headers: { authorization: 'Bearer token' } }),
       ),
     ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('checks a temporary token against an unconsumed, unexpired database challenge', async () => {
+    const { guard, reflector, sessionChain } = createGuard({
+      sub: 'admin-id',
+      email: 'admin@example.com',
+      tokenType: 'admin-temp',
+      jti: 'challenge-id',
+    });
+    reflector.getAllAndOverride.mockReturnValue('admin-temp' as any);
+    const context = contextFor({ headers: { authorization: 'Bearer token' } });
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+    expect(sessionChain.is).toHaveBeenCalledWith('consumed_at', null);
+    expect(sessionChain.gt).toHaveBeenCalledWith(
+      'expires_at',
+      expect.any(String),
+    );
+    sessionChain.maybeSingle.mockResolvedValue({
+      data: null,
+      error: null,
+    } as any);
+    await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+  });
+
+  it('requires a challenge ID even for a correctly signed temporary token', async () => {
+    const { guard, reflector, sessionChain } = createGuard({
+      sub: 'admin-id',
+      email: 'admin@example.com',
+      tokenType: 'admin-temp',
+    });
+    reflector.getAllAndOverride.mockReturnValue('admin-temp' as any);
+    await expect(
+      guard.canActivate(
+        contextFor({ headers: { authorization: 'Bearer token' } }),
+      ),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(sessionChain.maybeSingle).not.toHaveBeenCalled();
   });
 });

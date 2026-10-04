@@ -3,7 +3,7 @@ import { Injectable } from '@nestjs/common';
 @Injectable()
 export class AppService {
   getHello(): string {
-    return 'prentflows neh doh';
+    return 'PrintFlow API';
   }
 
   getHealth() {

@@ -42,12 +42,20 @@ export class ShopsService {
     if (error) {
       throw new InternalServerErrorException(error.message);
     }
-    return Promise.all(
-      (data || []).map(async ({ shop_photo_path, ...shop }) => ({
-        ...shop,
-        shop_photo_url: await this.signShopPhoto(shop.id, shop_photo_path),
-      })),
+    const shops = data || [];
+    // Keep ownership checks before batching: a shop cannot sign another shop's photo.
+    const photoPaths = shops.map(({ id, shop_photo_path }) =>
+      shop_photo_path && shop_photo_path.startsWith(`${id}/`) && !shop_photo_path.includes('..')
+        ? shop_photo_path as string
+        : null,
     );
+    const photos = await this.supabaseService.createSignedStorageUrls(
+      SHOP_PHOTO_BUCKET, photoPaths, 3600,
+    );
+    return shops.map(({ shop_photo_path, ...shop }, index) => ({
+        ...shop,
+        shop_photo_url: photoPaths[index] ? photos.get(photoPaths[index]!) || null : null,
+      }));
   }
 
   async getShopById(shopId: string) {
@@ -329,12 +337,12 @@ export class ShopsService {
       .select('id')
       .single();
 
-    if (error) {
-      throw new InternalServerErrorException(
-        `Failed to remove GCash QR: ${error.message}`,
-      );
+    if (error?.code === 'PGRST116') {
+      throw new NotFoundException('No shop is associated with this account.');
     }
-
+    if (error) {
+      throw new InternalServerErrorException('Could not remove the GCash QR code.');
+    }
     return { gcash_qr_url: null };
   }
 

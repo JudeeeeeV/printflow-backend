@@ -60,7 +60,11 @@ export class AdminController {
     @Req() req: AdminRequest,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const result = await this.adminService.setup2FA(req.user.sub, body.token);
+    const result = await this.adminService.setup2FA(
+      req.user.sub,
+      body.token,
+      req.user.jti!,
+    );
     setAdminAccessCookie(response, result.access_token);
     return { success: true };
   }
@@ -74,7 +78,11 @@ export class AdminController {
     @Req() req: AdminRequest,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const result = await this.adminService.verify2FA(req.user.sub, body.token);
+    const result = await this.adminService.verify2FA(
+      req.user.sub,
+      body.token,
+      req.user.jti!,
+    );
     setAdminAccessCookie(response, result.access_token);
     return { success: true };
   }

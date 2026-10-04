@@ -126,7 +126,10 @@ describe('Shop photo storage', () => {
     };
     const publicService = new ShopsService({
       getAdminClient: () => ({ from: () => listing }),
-      createSignedStorageUrl: sign,
+      createSignedStorageUrls: jest.fn(async (_bucket, paths) => {
+        expect(paths).toEqual([oldPath, null, null]);
+        return new Map([[oldPath, 'https://example.test/signed-photo']]);
+      }),
     } as unknown as SupabaseService);
     expect(await publicService.getVerifiedShops()).toEqual([
       {
@@ -137,7 +140,7 @@ describe('Shop photo storage', () => {
       { id: 'shop-b', name: 'Shop B', shop_photo_url: null },
       { id: 'shop-c', name: 'Shop C', shop_photo_url: null },
     ]);
-    expect(sign).toHaveBeenCalledTimes(1);
+    expect(sign).not.toHaveBeenCalled();
     expect(listing.eq).toHaveBeenCalledWith('verification_status', 'VERIFIED');
     expect(listing.eq).toHaveBeenCalledWith('status', 'OPEN');
   });

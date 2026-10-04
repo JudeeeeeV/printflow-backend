@@ -7,7 +7,7 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
-import { Logger } from '@nestjs/common';
+import { Logger, OnModuleDestroy } from '@nestjs/common';
 import { Namespace, Socket } from 'socket.io';
 import { SupabaseService } from '../supabase/supabase.service';
 import { PrintJobsRepository } from './repositories/print-jobs.repository';
@@ -27,6 +27,7 @@ interface SocketIdentity {
   deviceId?: string;
   connectionRole?: ConnectionRole;
   userRole?: UserRole;
+  expiresAt?: number;
 }
 
 type PrintflowSocket = Omit<Socket, 'data'> & { data: SocketIdentity };
@@ -48,7 +49,7 @@ const websocketOrigin = (
   namespace: '/daemon',
 })
 export class EdgeDaemonGateway
-  implements OnGatewayConnection, OnGatewayDisconnect
+  implements OnGatewayConnection, OnGatewayDisconnect, OnModuleDestroy
 {
   @WebSocketServer()
   server: Namespace;
@@ -57,6 +58,14 @@ export class EdgeDaemonGateway
   private readonly connectedDaemons = new Map<string, string>();
   private readonly shopPrinters = new Map<string, string[]>();
   private readonly deviceTouches = new Map<string, number>();
+  private readonly expiryTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+  private readonly recheckTimers = new Map<
+    string,
+    ReturnType<typeof setInterval>
+  >();
 
   constructor(
     private readonly supabaseService: SupabaseService,
@@ -80,7 +89,7 @@ export class EdgeDaemonGateway
     );
     client.use((_packet, next) => {
       void ready.then(() => {
-        if (client.connected && client.data.connectionRole) next();
+        if (this.isAuthorized(client)) next();
       });
     });
     return ready;
@@ -123,6 +132,7 @@ export class EdgeDaemonGateway
         client.data.shopId = identity.shopId;
         client.data.deviceId = identity.deviceId;
         client.data.connectionRole = 'daemon';
+        this.scheduleAuthorization(client, identity.expiresAt, token);
         void client.join(`shop_${identity.shopId}`);
 
         const previousSocketId = this.connectedDaemons.get(identity.shopId);
@@ -133,7 +143,9 @@ export class EdgeDaemonGateway
         this.deviceConnections.register(identity.deviceId, {
           socketId: client.id,
           disconnect: () => client.disconnect(true),
-          emit: (event, payload) => client.emit(event, payload),
+          emit: (event, payload) => {
+            if (this.isAuthorized(client)) client.emit(event, payload);
+          },
         });
         await this.daemonDevices.touch(
           identity.deviceId,
@@ -205,6 +217,7 @@ export class EdgeDaemonGateway
     client.data.userId = user.id;
     client.data.connectionRole = connectionRole;
     client.data.userRole = profileRecord.role;
+    this.scheduleAuthorization(client, this.verifiedUserTokenExpiry(token));
     void client.join(`shop_${shopId}`);
 
     this.logger.log(`Authenticated clerk connected for shop: ${shopId}`);
@@ -212,6 +225,7 @@ export class EdgeDaemonGateway
   }
 
   handleDisconnect(client: PrintflowSocket) {
+    this.clearAuthorizationTimers(client.id);
     const shopId = client.data.shopId;
     const deviceId = client.data.deviceId;
     if (deviceId) {
@@ -233,7 +247,8 @@ export class EdgeDaemonGateway
 
   hasConnectedDaemon(shopId: string): boolean {
     const socketId = this.connectedDaemons.get(shopId);
-    return Boolean(socketId && this.server.sockets.get(socketId)?.connected);
+    const daemon = socketId ? this.server.sockets.get(socketId) : undefined;
+    return Boolean(daemon && this.isAuthorized(daemon as PrintflowSocket));
   }
 
   getAvailablePrinters(shopId: string): string[] {
@@ -244,7 +259,7 @@ export class EdgeDaemonGateway
   emitBatchExecute(shopId: string, payload: unknown): boolean {
     const socketId = this.connectedDaemons.get(shopId);
     const daemon = socketId ? this.server.sockets.get(socketId) : undefined;
-    if (!daemon?.connected) return false;
+    if (!daemon || !this.isAuthorized(daemon as PrintflowSocket)) return false;
     daemon.emit('batch_execute', payload);
     return true;
   }
@@ -254,7 +269,7 @@ export class EdgeDaemonGateway
     @ConnectedSocket() client: PrintflowSocket,
     @MessageBody() data: { orderId: string; status: string },
   ) {
-    if (client.data.connectionRole !== 'daemon') {
+    if (!this.isAuthorized(client) || client.data.connectionRole !== 'daemon') {
       client.disconnect(true);
       return { ack: false };
     }
@@ -315,7 +330,8 @@ export class EdgeDaemonGateway
 
   @SubscribeMessage('check_daemon_status')
   handleCheckStatus(@ConnectedSocket() client: PrintflowSocket) {
-    if (client.data.connectionRole !== 'clerk') return;
+    if (!this.isAuthorized(client) || client.data.connectionRole !== 'clerk')
+      return;
     const shopId = client.data.shopId;
     if (!shopId) return;
     const isOnline = this.hasConnectedDaemon(shopId);
@@ -333,7 +349,7 @@ export class EdgeDaemonGateway
     @ConnectedSocket() client: PrintflowSocket,
     @MessageBody() data: { printers: string[] },
   ) {
-    if (client.data.connectionRole !== 'daemon') {
+    if (!this.isAuthorized(client) || client.data.connectionRole !== 'daemon') {
       client.disconnect(true);
       return;
     }
@@ -369,7 +385,11 @@ export class EdgeDaemonGateway
     @ConnectedSocket() client: PrintflowSocket,
     @MessageBody() data: { agentVersion?: string },
   ) {
-    if (client.data.connectionRole !== 'daemon' || !client.data.deviceId) {
+    if (
+      !this.isAuthorized(client) ||
+      client.data.connectionRole !== 'daemon' ||
+      !client.data.deviceId
+    ) {
       client.disconnect(true);
       return { ack: false };
     }
@@ -396,6 +416,77 @@ export class EdgeDaemonGateway
     const auth = client.handshake.auth as Record<string, unknown>;
     const value = auth.agentVersion;
     return typeof value === 'string' ? value.slice(0, 40) : undefined;
+  }
+
+  private isAuthorized(client: PrintflowSocket): boolean {
+    if (!client.connected || !client.data.connectionRole) return false;
+    if (!client.data.expiresAt || Date.now() >= client.data.expiresAt) {
+      client.disconnect(true);
+      return false;
+    }
+    return true;
+  }
+
+  private scheduleAuthorization(
+    client: PrintflowSocket,
+    expiresAt: number,
+    agentToken?: string,
+  ) {
+    if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now())
+      throw new Error('Socket token is expired or has no expiration');
+    this.clearAuthorizationTimers(client.id);
+    client.data.expiresAt = expiresAt;
+    const timeout = setTimeout(
+      () => client.disconnect(true),
+      Math.min(expiresAt - Date.now(), 2_147_483_647),
+    );
+    timeout.unref();
+    this.expiryTimers.set(client.id, timeout);
+    if (agentToken) {
+      let checking = false;
+      const timer = setInterval(() => {
+        if (checking || !this.isAuthorized(client)) return;
+        checking = true;
+        // Detect remote revocation/removal and shop de-verification on every instance.
+        void this.daemonDevices
+          .validateAgentToken(agentToken)
+          .then((identity) => {
+            if (
+              identity.deviceId !== client.data.deviceId ||
+              identity.shopId !== client.data.shopId
+            )
+              client.disconnect(true);
+          })
+          .catch(() => client.disconnect(true))
+          .finally(() => {
+            checking = false;
+          });
+      }, 30_000);
+      timer.unref();
+      this.recheckTimers.set(client.id, timer);
+    }
+  }
+
+  private verifiedUserTokenExpiry(token: string): number {
+    // This payload is read only after Supabase has authenticated the token.
+    const payload = JSON.parse(
+      Buffer.from(token.split('.')[1], 'base64url').toString('utf8'),
+    ) as { exp?: number };
+    if (!Number.isSafeInteger(payload.exp))
+      throw new Error('Socket token has no expiration');
+    return payload.exp! * 1000;
+  }
+
+  private clearAuthorizationTimers(socketId: string) {
+    clearTimeout(this.expiryTimers.get(socketId));
+    clearInterval(this.recheckTimers.get(socketId));
+    this.expiryTimers.delete(socketId);
+    this.recheckTimers.delete(socketId);
+  }
+
+  onModuleDestroy() {
+    for (const socketId of this.expiryTimers.keys())
+      this.clearAuthorizationTimers(socketId);
   }
 
   private legacyDaemonAuthEnabled() {
@@ -445,6 +536,7 @@ export class EdgeDaemonGateway
     client.data.userId = user.id;
     client.data.connectionRole = 'daemon';
     client.data.userRole = profileRecord.role;
+    this.scheduleAuthorization(client, this.verifiedUserTokenExpiry(token));
     void client.join(`shop_${shopId}`);
     const previousSocketId = this.connectedDaemons.get(shopId);
     this.connectedDaemons.set(shopId, client.id);
