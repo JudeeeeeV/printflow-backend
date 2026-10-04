@@ -41,7 +41,9 @@ async function main() {
     await db.query('select public.invalidate_signup_code($1, $2)', [email, requestId]);
     assert.equal(await consume('correct-hash'), false, 'Failed deliveries invalidate their code');
     await resetCooldown();
-    await db.exec('update printflow_private.signup_codes set sent_count = 5');
+    await db.exec('update printflow_private.signup_codes set sent_count = 49');
+    assert.equal(await reserve(), 0, 'The 50th email is still inside the legacy hourly limit');
+    await resetCooldown();
     assert.ok(await reserve() > 60, 'Hourly limit persists across code consumption');
     await db.exec('set role authenticated');
     await assert.rejects(() => reserve(), /permission denied/);

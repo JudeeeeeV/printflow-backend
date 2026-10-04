@@ -4,6 +4,7 @@ import { createClient, type User } from '@supabase/supabase-js';
 import { randomUUID } from 'node:crypto';
 import { sign, verify } from 'jsonwebtoken';
 import { SupabaseService } from '../supabase/supabase.service';
+import { nameFromCitEmail } from './cit-name';
 
 const STORAGE_KEY = 'printflow-microsoft';
 const VERIFIER_KEY = `${STORAGE_KEY}-code-verifier`;
@@ -198,15 +199,25 @@ export class MicrosoftAuthService {
       if (insertError) throw new MicrosoftLoginError('failed');
       const { data: profile, error: profileError } = await admin
         .from('users')
-        .select('role')
+        .select('role, first_name, last_name')
         .eq('id', user.id)
-        .single<{ role: string }>();
+        .single<{ role: string; first_name: string | null; last_name: string | null }>();
       if (
         profileError ||
         !profile ||
         !['STUDENT', 'CLERK', 'MANAGER'].includes(profile.role)
       ) {
         throw new MicrosoftLoginError('failed');
+      }
+      const name = nameFromCitEmail(user.email);
+      if (name) {
+        // Fill missing fields only; settings edits must survive later logins.
+        for (const field of ['first_name', 'last_name'] as const) {
+          if (profile[field]) continue;
+          const { error: nameError } = await admin.from('users')
+            .update({ [field]: name[field] }).eq('id', user.id).is(field, null);
+          if (nameError) throw new MicrosoftLoginError('failed');
+        }
       }
       return {
         accessToken: data.session.access_token,

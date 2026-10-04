@@ -79,11 +79,15 @@ function fixture() {
       throw new Error(`Unexpected request: ${url}`);
     });
   const upsert = jest.fn().mockResolvedValue({ error: null });
+  const updateName = jest.fn().mockResolvedValue({ error: null });
+  const updateId = jest.fn().mockReturnValue({ is: updateName });
+  const update = jest.fn().mockReturnValue({ eq: updateId });
   const single = jest
     .fn()
     .mockResolvedValue({ data: { role: 'STUDENT' }, error: null });
   const from = jest.fn().mockReturnValue({
     upsert,
+    update,
     select: jest
       .fn()
       .mockReturnValue({ eq: jest.fn().mockReturnValue({ single }) }),
@@ -109,11 +113,48 @@ function fixture() {
     upsert,
     single,
     accessToken,
+    update,
+    updateName,
+    updateId,
   };
 }
 
 describe('MicrosoftAuthService (real Supabase PKCE client, mocked HTTP)', () => {
   afterEach(() => jest.restoreAllMocks());
+
+  it('saves the CIT email name for an existing Microsoft account without changing its role', async () => {
+    const f = fixture();
+    f.user.email = 'juan.delacruz@cit.edu';
+    f.user.identities[0].identity_data.email = f.user.email;
+    f.single.mockResolvedValue({ data: { role: 'CLERK' }, error: null });
+    const { state, transaction } = await f.begin();
+    await f.service.finish('code', state, transaction);
+    expect(f.update).toHaveBeenCalledWith({ first_name: 'Juan' });
+    expect(f.update).toHaveBeenCalledWith({ last_name: 'Delacruz' });
+    expect(f.updateId).toHaveBeenCalledWith('id', f.user.id);
+    expect(f.updateName).toHaveBeenCalledWith('first_name', null);
+    expect(f.updateName).toHaveBeenCalledWith('last_name', null);
+  });
+
+  it('preserves names edited in account settings on subsequent Microsoft sign-in', async () => {
+    const f = fixture();
+    f.user.email = 'juan.delacruz@cit.edu';
+    f.user.identities[0].identity_data.email = f.user.email;
+    f.single.mockResolvedValue({ data: { role: 'STUDENT', first_name: 'Juan Miguel', last_name: 'De la Cruz' }, error: null });
+    const { state, transaction } = await f.begin();
+    await f.service.finish('code', state, transaction);
+    expect(f.update).not.toHaveBeenCalled();
+  });
+
+  it('revokes the session if saving the name fails', async () => {
+    const f = fixture();
+    f.user.email = 'juan.delacruz@cit.edu';
+    f.user.identities[0].identity_data.email = f.user.email;
+    f.updateName.mockResolvedValue({ error: { message: 'database unavailable' } });
+    const { state, transaction } = await f.begin();
+    await expect(f.service.finish('code', state, transaction)).rejects.toMatchObject({ code: 'failed' });
+    expect(f.fetchMock.mock.calls.some(([url]) => requestUrl(url).includes('/logout?scope=local'))).toBe(true);
+  });
 
   it('binds the browser transaction to an S256 challenge and requests email', async () => {
     const f = fixture();

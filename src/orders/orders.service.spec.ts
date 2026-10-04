@@ -2,6 +2,74 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { OrdersService } from './orders.service';
 import { PrintableDocumentService } from './printable-document.service';
 
+describe('OrdersService.getShopOrders client names', () => {
+  function fixture(orders: Record<string, unknown>[], profileError: unknown = null) {
+    const shopQuery = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({ data: { id: 'shop' }, error: null }),
+    };
+    const orderQuery = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockResolvedValue({ data: orders, error: null }),
+    };
+    const profileQuery = {
+      select: jest.fn().mockReturnThis(),
+      in: jest.fn().mockResolvedValue({
+        data: [{ id: 'client', first_name: 'Maria Ana', last_name: 'De la Cruz' }],
+        error: profileError,
+      }),
+    };
+    const from = jest.fn((table: string) => {
+      if (table === 'shops') return shopQuery;
+      if (table === 'orders') return orderQuery;
+      if (table === 'users') return profileQuery;
+      throw new Error(`Unexpected table: ${table}`);
+    });
+    const service = new OrdersService({
+      getAdminClient: () => ({ from }),
+      createSignedStorageUrls: jest.fn().mockResolvedValue(new Map([['asset-path', 'signed-url']])),
+    } as unknown as SupabaseService, {} as PrintableDocumentService);
+    return { service, from, shopQuery, orderQuery, profileQuery };
+  }
+
+  it('returns names and signed assets while fetching only clients from the shop orders', async () => {
+    const f = fixture([
+      { id: 'order1', client_id: 'client', assets: [{ file_url: 'asset-path' }] },
+      { id: 'order2', client_id: 'client' },
+      { id: 'order3', client_id: 'legacy' },
+    ]);
+    const result = await f.service.getShopOrders('shop');
+    expect(f.orderQuery.eq).toHaveBeenCalledWith('shop_id', 'shop');
+    expect(f.profileQuery.select).toHaveBeenCalledWith('id, first_name, last_name');
+    expect(f.profileQuery.in).toHaveBeenCalledWith('id', ['client', 'legacy']);
+    expect(result[0].client_name).toBe('Maria Ana De la Cruz');
+    expect(result[0].assets[0].file_url).toBe('signed-url');
+    expect(result[1].client_name).toBe('Maria Ana De la Cruz');
+    expect(result[2].client_name).toBeNull();
+  });
+
+  it('does not query profiles when the shop has no orders', async () => {
+    const f = fixture([]);
+    expect(await f.service.getShopOrders('shop')).toEqual([]);
+    expect(f.from).not.toHaveBeenCalledWith('users');
+  });
+
+  it('rejects an unverified shop before reading orders or names', async () => {
+    const f = fixture([]);
+    f.shopQuery.single.mockResolvedValue({ data: null, error: null });
+    await expect(f.service.getShopOrders('shop')).rejects.toThrow('A verified shop account is required');
+    expect(f.from).not.toHaveBeenCalledWith('orders');
+    expect(f.from).not.toHaveBeenCalledWith('users');
+  });
+
+  it('reports profile query failures instead of silently losing all names', async () => {
+    const f = fixture([{ id: 'order', client_id: 'client' }], { message: 'unavailable' });
+    await expect(f.service.getShopOrders('shop')).rejects.toThrow('Failed to fetch client names.');
+  });
+});
+
 describe('OrdersService.getDrafts', () => {
   it.each([
     ['Lesson notes.docx', 'Lesson notes.docx'],

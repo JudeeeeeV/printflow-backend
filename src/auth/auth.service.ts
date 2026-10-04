@@ -10,12 +10,29 @@ import { isAuthRetryableFetchError } from '@supabase/supabase-js';
 import { SupabaseService } from '../supabase/supabase.service';
 import { LoginDto } from './dto/login.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
 
   constructor(private readonly supabaseService: SupabaseService) {}
+
+  async getProfile(userId: string) {
+    const { data, error } = await this.supabaseService.getAdminClient()
+      .from('users').select('first_name, last_name').eq('id', userId).single();
+    if (error || !data) throw new InternalServerErrorException('Unable to load your profile.');
+    return { firstName: data.first_name || '', lastName: data.last_name || '' };
+  }
+
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
+    const { data, error } = await this.supabaseService.getAdminClient()
+      .from('users')
+      .update({ first_name: dto.firstName, last_name: dto.lastName })
+      .eq('id', userId).select('first_name, last_name').single();
+    if (error || !data) throw new InternalServerErrorException('Unable to save your name. Please try again.');
+    return { firstName: data.first_name, lastName: data.last_name };
+  }
 
   async login(loginDto: LoginDto) {
     const { email, password } = loginDto;

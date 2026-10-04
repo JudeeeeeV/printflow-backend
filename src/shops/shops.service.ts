@@ -62,19 +62,16 @@ export class ShopsService {
       throw new InternalServerErrorException(error.message);
     }
     const { shop_photo_path, ...shop } = data;
+    const [shopPhotoUrl, permitUrl, qrUrl] = await Promise.all([
+      this.signShopPhoto(shopId, shop_photo_path),
+      this.supabaseService.createSignedStorageUrl('permits', data.business_permit_url, 300),
+      this.supabaseService.createSignedStorageUrl('gcash_qrs', data.gcash_qr_url, 300),
+    ]);
     return {
       ...shop,
-      shop_photo_url: await this.signShopPhoto(shopId, shop_photo_path),
-      business_permit_url: await this.supabaseService.createSignedStorageUrl(
-        'permits',
-        data.business_permit_url,
-        300,
-      ),
-      gcash_qr_url: await this.supabaseService.createSignedStorageUrl(
-        'gcash_qrs',
-        data.gcash_qr_url,
-        300,
-      ),
+      shop_photo_url: shopPhotoUrl,
+      business_permit_url: permitUrl,
+      gcash_qr_url: qrUrl,
     };
   }
 

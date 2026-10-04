@@ -135,4 +135,28 @@ export class SupabaseService implements OnModuleInit {
     }
     return data.signedUrl;
   }
+
+  async createSignedStorageUrls(
+    bucket: string,
+    storedValues: Array<string | null | undefined>,
+    expiresInSeconds = 300,
+  ): Promise<Map<string, string | null>> {
+    const paths = [...new Set(storedValues.map(value =>
+      value ? this.storagePath(value, bucket) : '',
+    ).filter(Boolean))];
+    const signed = new Map<string, string | null>();
+    if (!paths.length) return signed;
+    const storage = this.getAdminClient().storage.from(bucket);
+    // Bound each request while deduplicating shared objects in the queue.
+    for (let start = 0; start < paths.length; start += 100) {
+      const batch = paths.slice(start, start + 100);
+      const { data, error } = await storage.createSignedUrls(batch, expiresInSeconds);
+      if (error) this.logger.warn(`Could not sign ${bucket} objects: ${error.message}`);
+      for (const item of data || []) {
+        if (item.path) signed.set(item.path, item.error ? null : item.signedUrl || null);
+      }
+    }
+    return new Map(storedValues.filter((value): value is string => Boolean(value))
+      .map(value => [value, signed.get(this.storagePath(value, bucket)) || null]));
+  }
 }

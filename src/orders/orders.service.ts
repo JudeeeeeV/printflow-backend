@@ -244,9 +244,35 @@ export class OrdersService {
         'Failed to fetch shop orders: ' + error.message,
       );
     }
-    return Promise.all(
-      (data || []).map((order) => this.signOrderStorageFields(order)),
+    const orders = data || [];
+    const clientIds = [...new Set(orders.map((order) => order.client_id))];
+    if (!clientIds.length) return [];
+    const [{ data: clients, error: clientsError }, assets, receipts] = await Promise.all([
+      supabase.from('users').select('id, first_name, last_name').in('id', clientIds),
+      this.supabaseService.createSignedStorageUrls('assets', orders.flatMap(order =>
+        (order.assets || []).map((asset: { file_url: string }) => asset.file_url))),
+      this.supabaseService.createSignedStorageUrls('receipts', orders.flatMap(order =>
+        (order.payment_receipts || []).map((receipt: { receipt_url: string }) => receipt.receipt_url))),
+    ]);
+    if (clientsError) {
+      throw new InternalServerErrorException('Failed to fetch client names.');
+    }
+    const names = new Map(
+      (clients || []).map((client) => [
+        client.id,
+        [client.first_name, client.last_name].filter(Boolean).join(' ').trim(),
+      ]),
     );
+    return orders.map((order) => ({
+        ...order,
+        client_name: names.get(order.client_id) || null,
+        assets: (order.assets || []).map((asset: { file_url: string }) => ({
+          ...asset, file_url: assets.get(asset.file_url) || null,
+        })),
+        payment_receipts: (order.payment_receipts || []).map((receipt: { receipt_url: string }) => ({
+          ...receipt, receipt_url: receipts.get(receipt.receipt_url) || null,
+        })),
+      }));
   }
 
   async getOrder(userId: string, orderId: string) {

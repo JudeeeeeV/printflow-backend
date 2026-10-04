@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Patch,
   Body,
   UseGuards,
   Request,
@@ -15,6 +16,7 @@ import type {
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 import { SupabaseAuthGuard } from '../iam/guards/supabase-auth.guard';
 import { Throttle } from '@nestjs/throttler';
 import {
@@ -97,5 +99,17 @@ export class AuthController {
     @Body() dto: ChangePasswordDto,
   ) {
     return this.authService.changePassword(req.user.id, dto);
+  }
+
+  @Get('profile')
+  @UseGuards(SupabaseAuthGuard)
+  getProfile(@Request() req: AuthenticatedRequest) {
+    return this.authService.getProfile(req.user.id);
+  }
+
+  @Patch('profile')
+  @UseGuards(SupabaseAuthGuard)
+  updateProfile(@Request() req: AuthenticatedRequest, @Body() dto: UpdateProfileDto) {
+    return this.authService.updateProfile(req.user.id, dto);
   }
 }
