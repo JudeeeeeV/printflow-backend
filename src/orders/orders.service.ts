@@ -19,6 +19,19 @@ import {
 } from '../common/upload-security';
 import { PrintableDocumentService } from './printable-document.service';
 
+const SHOP_VISIBLE_ORDER_STATES = new Set([
+  'OPEN_INQUIRY',
+  'PROOF_APPROVED',
+  'AWAITING_PAYMENT',
+  'AWAITING_PAYMENT_VERIFICATION',
+  'ESCALATED_DISPUTE',
+  'IN_PRODUCTION',
+  'PRINTED',
+  'READY_FOR_PICKUP',
+  'COMPLETED',
+  'EXPIRED',
+]);
+
 const isMissingOriginalFilenameColumn = (
   error: { code?: string; message?: string } | null,
 ): boolean =>
@@ -238,18 +251,9 @@ export class OrdersService {
       .from('orders')
       .select('*, payment_receipts(*), assets(*)')
       .eq('shop_id', shopId)
-      .in('state', [
-        'OPEN_INQUIRY',
-        'PROOF_APPROVED',
-        'AWAITING_PAYMENT',
-        'AWAITING_PAYMENT_VERIFICATION',
-        'ESCALATED_DISPUTE',
-        'IN_PRODUCTION',
-        'PRINTED',
-        'READY_FOR_PICKUP',
-        'COMPLETED',
-        'EXPIRED',
-      ])
+      // Only use a universally deployed enum value in the database predicate.
+      // Other workflow states may not exist in older deployments' enum yet.
+      .neq('state', 'DRAFT')
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -257,7 +261,10 @@ export class OrdersService {
         'Failed to fetch shop orders: ' + error.message,
       );
     }
-    const orders = data || [];
+    // Apply the allowlist before profile lookups, signing, or returning assets.
+    const orders = (data || []).filter((order) =>
+      SHOP_VISIBLE_ORDER_STATES.has(order.state),
+    );
     const clientIds = [...new Set(orders.map((order) => order.client_id))];
     if (!clientIds.length) return [];
     const [{ data: clients, error: clientsError }, assets, receipts] =

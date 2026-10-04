@@ -4,7 +4,7 @@ The four locally reproduced application findings from the September 25 review ar
 
 | Finding | Implemented protection |
 | --- | --- |
-| F01: draft disclosure | The shop order query allows only submitted order states before loading/signing assets. Student draft access still checks ownership. |
+| F01: draft disclosure | The database excludes `DRAFT`, and the application allows only submitted order states before signing or returning assets. The allowlist stays outside the enum predicate so older deployed schemas can load the queue. Student draft access still checks ownership. |
 | F02: stale draft pricing | Both draft editing and submission compare `draft_version`. A database trigger increments it on every order update, including edits that restore earlier values. A conflict returns HTTP 409 instead of submitting a stale price. |
 | F03: administrator OTP replay | Password login creates a hashed, expiring challenge. Database RPCs cap challenge attempts at five and atomically consume the challenge and a monotonically increasing OTP step while creating the access session. Enrollment cannot overwrite enabled 2FA. Public database roles cannot invoke the RPCs. |
 | F04: expired printer connections | Verified token expiry is carried into the socket identity. A timer disconnects the socket at expiry, and event/dispatch checks also reject expired identities. Device credentials and shop verification are rechecked every 30 seconds without overlapping database checks. Disconnect/shutdown clears the timers. |
@@ -22,9 +22,9 @@ Missing migration columns/functions cause affected operations to fail closed. Th
 
 ## Local validation
 
-- `npm test -- --runInBand`: 209 tests passed across 32 suites.
+- `npm test -- --runInBand`: 210 tests passed across 32 suites, including filtering unknown/private states before signing assets.
 - `npm run test:security`: five security regressions passed, including real local sockets and a real short-lived JWT. The previous reproduction assertions now check rejection/privacy/integrity.
-- `npm run test:security-sql`: passed on a local PostgreSQL engine (PGlite). Covers migration idempotency, version conflicts, OTP/challenge replay, enrollment, attempt limits, expiry, competing completion statements, transaction rollback, and database permissions. This is not a multi-instance production load test.
+- `npm run test:security-sql`: passed on a local PostgreSQL engine (PGlite). Covers an older order-state enum, migration idempotency, version conflicts, OTP/challenge replay, enrollment, attempt limits, expiry, competing completion statements, transaction rollback, and database permissions. This is not a multi-instance production load test.
 - `npm run build`: passed.
 - Live registry audit: the backend has zero reported dependency vulnerabilities. A user-provided frontend audit exposed that the earlier sandbox-only audits returned empty cached results. Live audits confirmed seven frontend and five admin findings from unpatched `braces` dependencies. Both browser apps now use Tailwind 4.3.3 with its PostCSS plugin, removing Tailwind 3 and the unused frontend CLI and their vulnerable dependency chains. Installation audits now report zero vulnerabilities in both apps as well. Their production builds pass, and all 63 frontend tests pass.
 - The Tailwind migration retains the existing JavaScript Carbon theme and adds compatibility defaults for borders, placeholders, focus outlines, shadows, blur, and button cursors. CSS modules reference the theme for `@apply`. Tailwind 4 targets modern browsers; see its [upgrade guide](https://tailwindcss.com/docs/upgrade-guide). The reported `braces` advisory has [no patched release](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm), so upgrading the dependency consumers removes the affected packages rather than hiding the advisory.

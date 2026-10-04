@@ -11,7 +11,8 @@ async function main() {
   try {
     await db.exec(`
       create role anon; create role authenticated; create role service_role bypassrls;
-      create table public.orders(id uuid primary key, state text, price integer);
+      create type public.order_state as enum ('DRAFT', 'OPEN_INQUIRY', 'IN_PRODUCTION', 'PRINTED', 'EXPIRED');
+      create table public.orders(id uuid primary key, state public.order_state, price integer);
       create table public.admins(id uuid primary key, is_2fa_enabled boolean not null default false,
         two_factor_secret text, two_factor_secret_encrypted text);
       create table public.admin_sessions(id uuid default gen_random_uuid() primary key,
@@ -26,6 +27,22 @@ async function main() {
     await db.exec(migration);
 
     const orderId = randomUUID();
+    await assert.rejects(
+      () =>
+        db.query(
+          "select id from public.orders where state in ('OPEN_INQUIRY', 'READY_FOR_PICKUP') limit 0",
+        ),
+      /invalid input value for enum/,
+    );
+    assert.deepEqual(
+      (
+        await db.query(
+          "select id from public.orders where state <> 'DRAFT' limit 0",
+        )
+      ).rows,
+      [],
+      'The queue predicate works before newer enum states are deployed',
+    );
     await db.query(
       "insert into public.orders(id, state, price) values ($1, 'DRAFT', 10)",
       [orderId],
