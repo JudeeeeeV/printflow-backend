@@ -18,12 +18,10 @@ describe('OrdersService.getShopOrders client names', () => {
       select: jest.fn().mockReturnThis(),
       eq: jest.fn().mockReturnThis(),
       neq: jest.fn().mockReturnThis(),
-      order: jest
-        .fn()
-        .mockResolvedValue({
-          data: orders.map((order) => ({ state: 'OPEN_INQUIRY', ...order })),
-          error: null,
-        }),
+      order: jest.fn().mockResolvedValue({
+        data: orders.map((order) => ({ state: 'OPEN_INQUIRY', ...order })),
+        error: null,
+      }),
     };
     const profileQuery = {
       select: jest.fn().mockReturnThis(),
@@ -355,6 +353,9 @@ describe('OrdersService.createOrder', () => {
         isDraft: 'true',
         paperSize: 'A4',
         printColorMode: 'BLACK_AND_WHITE',
+        orderName: 'Lesson notes',
+        orientation: 'PORTRAIT',
+        copies: 2,
       },
       file,
     );
@@ -363,6 +364,14 @@ describe('OrdersService.createOrder', () => {
       expect.objectContaining({
         original_filename: 'Lesson notes.docx',
         file_type: 'PDF',
+      }),
+    );
+    expect(ordersQuery.insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        order_name: 'Lesson notes',
+        orientation: 'PORTRAIT',
+        copies: 2,
+        total: 6,
       }),
     );
     const uploadCalls = upload.mock.calls as unknown as Array<
@@ -389,6 +398,9 @@ describe('OrdersService.createOrder', () => {
         isDraft: 'true',
         paperSize: 'A4',
         printColorMode: 'BLACK_AND_WHITE',
+        orderName: 'Lesson notes',
+        orientation: 'PORTRAIT',
+        copies: 2,
       },
       file,
     );

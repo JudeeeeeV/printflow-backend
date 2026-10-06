@@ -88,6 +88,18 @@ class JobProcessor {
       await this.printerService.print(tempFile, {
         printerName,
         monochrome: order.print_color_mode === 'BLACK_AND_WHITE',
+        orientation:
+          order.orientation === 'LANDSCAPE' ? 'landscape' : 'portrait',
+        copies:
+          Number.isInteger(order.copies) && order.copies >= 1 && order.copies <= 99
+            ? order.copies
+            : 1,
+        paperSize:
+          order.paper_size === 'SHORT'
+            ? 'letter'
+            : order.paper_size === 'LONG'
+              ? 'legal'
+              : 'A4',
       });
       this.report(order.id, 'COMPLETED');
       logger.info(`Print job ${order.id} was dispatched successfully`);

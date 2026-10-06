@@ -61,13 +61,16 @@ class PrinterService {
     return !printerName || this.printers.includes(printerName);
   }
 
-  print(filePath, { printerName, monochrome }) {
+  print(filePath, { printerName, monochrome, orientation, copies, paperSize }) {
     if (!this.has(printerName)) {
       throw new Error('The selected printer is no longer available');
     }
     return this.ptp.print(filePath, {
       ...(printerName ? { printer: printerName } : {}),
       ...(monochrome ? { monochrome: true } : {}),
+      ...(orientation ? { orientation } : {}),
+      ...(copies ? { copies } : {}),
+      ...(paperSize ? { paperSize } : {}),
     });
   }
 }

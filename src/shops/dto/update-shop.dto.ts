@@ -1,8 +1,10 @@
 import {
+  IsBoolean,
   IsNumber,
   IsString,
   Max,
   MaxLength,
+  Matches,
   Min,
   MinLength,
   ValidateIf,
@@ -36,4 +38,18 @@ export class UpdateShopDto {
   @Min(-180)
   @Max(180)
   longitude?: number | null;
+
+  @ValidateIf((_, value) => value !== undefined)
+  @IsBoolean()
+  availability_override?: boolean;
+
+  @ValidateIf((_, value) => value !== undefined)
+  @IsString()
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/)
+  opens_at?: string;
+
+  @ValidateIf((_, value) => value !== undefined)
+  @IsString()
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/)
+  closes_at?: string;
 }

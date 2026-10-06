@@ -18,6 +18,7 @@ import {
   secureObjectName,
 } from '../common/upload-security';
 import { PrintableDocumentService } from './printable-document.service';
+import { isShopOpenNow } from '../shops/shop-availability';
 
 const SHOP_VISIBLE_ORDER_STATES = new Set([
   'OPEN_INQUIRY',
@@ -68,6 +69,7 @@ export class OrdersService {
     paperSize: string,
     printColorMode: string,
     pageCount: number,
+    copies = 1,
   ): number {
     const basePrice = Number(pricingMatrix?.paper_sizes?.[paperSize]);
     const colorAdditive = Number(
@@ -79,11 +81,16 @@ export class OrdersService {
       !Number.isFinite(colorAdditive) ||
       colorAdditive < 0 ||
       !Number.isInteger(pageCount) ||
-      pageCount < 1
+      pageCount < 1 ||
+      !Number.isInteger(copies) ||
+      copies < 1 ||
+      copies > 99
     ) {
       throw new BadRequestException('Invalid print options or shop pricing');
     }
-    return Math.round((basePrice + colorAdditive) * pageCount * 100) / 100;
+    return (
+      Math.round((basePrice + colorAdditive) * pageCount * copies * 100) / 100
+    );
   }
 
   private async getAssetPageCount(orderId: string): Promise<number> {
@@ -346,7 +353,7 @@ export class OrdersService {
       return supabase
         .from('orders')
         .select(
-          `id, total, created_at, shop_id, shops(name), ${assetColumns}, paper_size, print_color_mode, page_count`,
+          `id, total, created_at, shop_id, shops(name), ${assetColumns}, paper_size, print_color_mode, page_count, order_name, orientation, copies`,
           { count: 'exact' },
         )
         .eq('client_id', userId)
@@ -427,6 +434,9 @@ export class OrdersService {
           paperSize: order.paper_size,
           printColorMode: order.print_color_mode,
           pageCount: order.page_count,
+          orderName: order.order_name,
+          orientation: order.orientation,
+          copies: order.copies,
         };
       }),
     );
@@ -474,6 +484,7 @@ export class OrdersService {
       payload.paperSize,
       payload.printColorMode,
       pageCount,
+      payload.copies,
     );
 
     const { data: updatedDraft, error: updateError } = await supabase
@@ -484,6 +495,9 @@ export class OrdersService {
         print_color_mode: payload.printColorMode,
         total,
         page_count: pageCount,
+        order_name: payload.orderName.trim(),
+        orientation: payload.orientation,
+        copies: payload.copies,
       })
       .eq('id', draftId)
       .eq('client_id', userId)
@@ -509,7 +523,9 @@ export class OrdersService {
 
     const { data: order, error: fetchError } = await supabase
       .from('orders')
-      .select('state, shop_id, paper_size, print_color_mode, draft_version')
+      .select(
+        'state, shop_id, paper_size, print_color_mode, copies, draft_version',
+      )
       .eq('id', draftId)
       .eq('client_id', userId)
       .single();
@@ -525,17 +541,22 @@ export class OrdersService {
     await this.requireVerifiedShop(order.shop_id);
     const { data: shop, error: shopError } = await supabase
       .from('shops')
-      .select('pricing_matrix')
+      .select(
+        'pricing_matrix, availability_override, opens_at, closes_at, timezone',
+      )
       .eq('id', order.shop_id)
       .single();
     if (shopError || !shop)
       throw new BadRequestException('Shop is unavailable');
+    if (!isShopOpenNow(shop))
+      throw new BadRequestException('Shop is currently closed');
     const pageCount = await this.getAssetPageCount(draftId);
     const total = this.calculatePrice(
       shop.pricing_matrix,
       order.paper_size,
       order.print_color_mode,
       pageCount,
+      order.copies,
     );
 
     const { data: submittedDraft, error: updateError } = await supabase
@@ -599,13 +620,18 @@ export class OrdersService {
     // Fetch shop pricing matrix
     const { data: shop, error: shopError } = await supabase
       .from('shops')
-      .select('pricing_matrix')
+      .select(
+        'pricing_matrix, availability_override, opens_at, closes_at, timezone',
+      )
       .eq('id', payload.shopId)
       .eq('verification_status', 'VERIFIED')
       .single();
 
     if (shopError || !shop) {
       throw new InternalServerErrorException('Failed to fetch shop details.');
+    }
+    if (!isDraftOrder && !isShopOpenNow(shop)) {
+      throw new BadRequestException('This shop is currently closed.');
     }
 
     const pricingMatrix = shop.pricing_matrix;
@@ -621,6 +647,7 @@ export class OrdersService {
       payload.paperSize,
       payload.printColorMode,
       pageCount,
+      payload.copies,
     );
 
     // 1. Create the base order ledger entry
@@ -636,6 +663,9 @@ export class OrdersService {
         print_color_mode: payload.printColorMode,
         paper_size: payload.paperSize,
         page_count: pageCount,
+        order_name: payload.orderName.trim(),
+        orientation: payload.orientation,
+        copies: payload.copies,
       })
       .select()
       .single();

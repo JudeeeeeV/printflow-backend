@@ -119,9 +119,24 @@ describe('Shop photo storage', () => {
       eq: jest.fn().mockReturnThis(),
       error: null,
       data: [
-        { id: 'shop-a', name: 'Shop A', shop_photo_path: oldPath },
-        { id: 'shop-b', name: 'Shop B', shop_photo_path: null },
-        { id: 'shop-c', name: 'Shop C', shop_photo_path: oldPath },
+        {
+          id: 'shop-a',
+          name: 'Shop A',
+          shop_photo_path: oldPath,
+          availability_override: true,
+        },
+        {
+          id: 'shop-b',
+          name: 'Shop B',
+          shop_photo_path: null,
+          availability_override: true,
+        },
+        {
+          id: 'shop-c',
+          name: 'Shop C',
+          shop_photo_path: oldPath,
+          availability_override: true,
+        },
       ],
     };
     const publicService = new ShopsService({
@@ -135,13 +150,29 @@ describe('Shop photo storage', () => {
       {
         id: 'shop-a',
         name: 'Shop A',
+        availability_override: true,
+        is_open: true,
+        status: 'OPEN',
         shop_photo_url: 'https://example.test/signed-photo',
       },
-      { id: 'shop-b', name: 'Shop B', shop_photo_url: null },
-      { id: 'shop-c', name: 'Shop C', shop_photo_url: null },
+      {
+        id: 'shop-b',
+        name: 'Shop B',
+        availability_override: true,
+        is_open: true,
+        status: 'OPEN',
+        shop_photo_url: null,
+      },
+      {
+        id: 'shop-c',
+        name: 'Shop C',
+        availability_override: true,
+        is_open: true,
+        status: 'OPEN',
+        shop_photo_url: null,
+      },
     ]);
     expect(sign).not.toHaveBeenCalled();
     expect(listing.eq).toHaveBeenCalledWith('verification_status', 'VERIFIED');
-    expect(listing.eq).toHaveBeenCalledWith('status', 'OPEN');
   });
 });

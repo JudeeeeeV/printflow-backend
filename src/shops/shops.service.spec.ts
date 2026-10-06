@@ -49,6 +49,25 @@ describe('Shop locations', () => {
     expect(query.update).toHaveBeenCalledWith({ name: 'Updated shop' });
   });
 
+  it('saves the manual override and scheduled hours', async () => {
+    await service.updateShop('shop-1', {
+      availability_override: true,
+      opens_at: '08:00',
+      closes_at: '20:00',
+    });
+    expect(query.update).toHaveBeenCalledWith({
+      availability_override: true,
+      opens_at: '08:00',
+      closes_at: '20:00',
+    });
+  });
+
+  it('rejects a zero-length availability window', async () => {
+    await expect(
+      service.updateShop('shop-1', { opens_at: '08:00', closes_at: '08:00' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
   it.each([
     { latitude: 10 },
     { longitude: 120 },
@@ -64,12 +83,11 @@ describe('Shop locations', () => {
     expect(query.update).not.toHaveBeenCalled();
   });
 
-  it('limits the public listing to approved open shops and public location fields', async () => {
+  it('lists approved shops with only public location and availability fields', async () => {
     await service.getVerifiedShops();
     expect(query.select).toHaveBeenCalledWith(
-      'id, name, status, verification_status, pricing_matrix, location, latitude, longitude, shop_photo_path',
+      'id, name, verification_status, pricing_matrix, location, latitude, longitude, shop_photo_path, availability_override, opens_at, closes_at, timezone',
     );
-    expect(query.eq).toHaveBeenCalledWith('status', 'OPEN');
     expect(query.eq).toHaveBeenCalledWith('verification_status', 'VERIFIED');
   });
 
@@ -79,6 +97,9 @@ describe('Shop locations', () => {
     { name: null },
     { location: 123 },
     { verification_status: 'VERIFIED' },
+    { availability_override: 'true' },
+    { opens_at: '8 AM' },
+    { closes_at: '24:00' },
   ])('rejects malformed API fields: %j', async (body) => {
     const errors = await validate(plainToInstance(UpdateShopDto, body), {
       whitelist: true,

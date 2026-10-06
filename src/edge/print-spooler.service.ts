@@ -16,6 +16,8 @@ interface PrintOrder {
   state: string;
   print_color_mode: string;
   paper_size: string;
+  orientation: 'PORTRAIT' | 'LANDSCAPE';
+  copies: number;
   assets: Array<{ file_url: string }>;
 }
 
@@ -65,7 +67,9 @@ export class PrintSpoolerService {
     // Validate that orders are IN_PRODUCTION and belong to this shop
     const { data: orders, error } = await supabase
       .from('orders')
-      .select('id, state, print_color_mode, paper_size, assets(file_url)')
+      .select(
+        'id, state, print_color_mode, paper_size, orientation, copies, assets(file_url)',
+      )
       .eq('shop_id', shopId)
       .in('id', orderIds);
 
@@ -89,6 +93,9 @@ export class PrintSpoolerService {
       id: string;
       file_url: string;
       print_color_mode: string;
+      orientation: 'PORTRAIT' | 'LANDSCAPE';
+      copies: number;
+      paper_size: string;
     }> = [];
 
     for (const order of validOrders) {
@@ -112,6 +119,9 @@ export class PrintSpoolerService {
         id: order.id,
         file_url: signedUrl,
         print_color_mode: order.print_color_mode,
+        orientation: order.orientation,
+        copies: order.copies,
+        paper_size: order.paper_size,
       });
     }
 

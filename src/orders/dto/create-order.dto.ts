@@ -1,4 +1,16 @@
-import { IsString, IsNotEmpty, IsUUID, IsOptional } from 'class-validator';
+import { Transform } from 'class-transformer';
+import {
+  IsIn,
+  IsInt,
+  IsString,
+  IsNotEmpty,
+  IsUUID,
+  IsOptional,
+  Max,
+  MaxLength,
+  Matches,
+  Min,
+} from 'class-validator';
 
 export class CreateOrderDto {
   @IsUUID('all', { message: 'Invalid Shop ID format' })
@@ -16,4 +28,19 @@ export class CreateOrderDto {
   @IsString()
   @IsNotEmpty()
   printColorMode: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  @Matches(/\S/, { message: 'Order name cannot be blank' })
+  orderName: string;
+
+  @IsIn(['PORTRAIT', 'LANDSCAPE'])
+  orientation: 'PORTRAIT' | 'LANDSCAPE';
+
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(1)
+  @Max(99)
+  copies: number;
 }

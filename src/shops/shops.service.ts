@@ -16,6 +16,7 @@ import {
   IMAGE_MIME_TYPES,
   secureObjectName,
 } from '../common/upload-security';
+import { withEffectiveAvailability } from './shop-availability';
 
 @Injectable()
 export class ShopsService {
@@ -34,9 +35,8 @@ export class ShopsService {
       .getAdminClient()
       .from('shops')
       .select(
-        'id, name, status, verification_status, pricing_matrix, location, latitude, longitude, shop_photo_path',
+        'id, name, verification_status, pricing_matrix, location, latitude, longitude, shop_photo_path, availability_override, opens_at, closes_at, timezone',
       )
-      .eq('status', 'OPEN')
       .eq('verification_status', 'VERIFIED');
 
     if (error) {
@@ -45,17 +45,24 @@ export class ShopsService {
     const shops = data || [];
     // Keep ownership checks before batching: a shop cannot sign another shop's photo.
     const photoPaths = shops.map(({ id, shop_photo_path }) =>
-      shop_photo_path && shop_photo_path.startsWith(`${id}/`) && !shop_photo_path.includes('..')
-        ? shop_photo_path as string
+      shop_photo_path &&
+      shop_photo_path.startsWith(`${id}/`) &&
+      !shop_photo_path.includes('..')
+        ? (shop_photo_path as string)
         : null,
     );
     const photos = await this.supabaseService.createSignedStorageUrls(
-      SHOP_PHOTO_BUCKET, photoPaths, 3600,
+      SHOP_PHOTO_BUCKET,
+      photoPaths,
+      3600,
     );
+    const now = new Date();
     return shops.map(({ shop_photo_path, ...shop }, index) => ({
-        ...shop,
-        shop_photo_url: photoPaths[index] ? photos.get(photoPaths[index]!) || null : null,
-      }));
+      ...withEffectiveAvailability(shop, now),
+      shop_photo_url: photoPaths[index]
+        ? photos.get(photoPaths[index]!) || null
+        : null,
+    }));
   }
 
   async getShopById(shopId: string) {
@@ -72,11 +79,19 @@ export class ShopsService {
     const { shop_photo_path, ...shop } = data;
     const [shopPhotoUrl, permitUrl, qrUrl] = await Promise.all([
       this.signShopPhoto(shopId, shop_photo_path),
-      this.supabaseService.createSignedStorageUrl('permits', data.business_permit_url, 300),
-      this.supabaseService.createSignedStorageUrl('gcash_qrs', data.gcash_qr_url, 300),
+      this.supabaseService.createSignedStorageUrl(
+        'permits',
+        data.business_permit_url,
+        300,
+      ),
+      this.supabaseService.createSignedStorageUrl(
+        'gcash_qrs',
+        data.gcash_qr_url,
+        300,
+      ),
     ]);
     return {
-      ...shop,
+      ...withEffectiveAvailability(shop),
       shop_photo_url: shopPhotoUrl,
       business_permit_url: permitUrl,
       gcash_qr_url: qrUrl,
@@ -114,6 +129,21 @@ export class ShopsService {
       payload.location = updateData.location.trim();
     if (updateData.description !== undefined)
       payload.description = updateData.description.trim();
+    if (updateData.availability_override !== undefined)
+      payload.availability_override = updateData.availability_override;
+    if (updateData.opens_at !== undefined)
+      payload.opens_at = updateData.opens_at;
+    if (updateData.closes_at !== undefined)
+      payload.closes_at = updateData.closes_at;
+    if (
+      updateData.opens_at !== undefined &&
+      updateData.closes_at !== undefined &&
+      updateData.opens_at === updateData.closes_at
+    ) {
+      throw new BadRequestException(
+        'Opening and closing times must be different.',
+      );
+    }
     if (latitude !== undefined) payload.latitude = latitude;
     if (longitude !== undefined) payload.longitude = longitude;
     if (!Object.keys(payload).length)
@@ -123,7 +153,9 @@ export class ShopsService {
       .from('shops')
       .update(payload)
       .eq('id', shopId)
-      .select('id, name, location, description, latitude, longitude')
+      .select(
+        'id, name, location, description, latitude, longitude, availability_override, opens_at, closes_at, timezone',
+      )
       .single();
 
     if (error) {
@@ -135,7 +167,7 @@ export class ShopsService {
       );
     }
 
-    return data;
+    return withEffectiveAvailability(data);
   }
 
   async ensurePermitsBucket() {
@@ -341,7 +373,9 @@ export class ShopsService {
       throw new NotFoundException('No shop is associated with this account.');
     }
     if (error) {
-      throw new InternalServerErrorException('Could not remove the GCash QR code.');
+      throw new InternalServerErrorException(
+        'Could not remove the GCash QR code.',
+      );
     }
     return { gcash_qr_url: null };
   }
