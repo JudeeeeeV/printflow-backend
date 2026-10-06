@@ -116,10 +116,17 @@ describe('PrintSpoolerService readiness', () => {
   });
 
   it('dispatches a valid order to a reported printer', async () => {
-    const { service, gateway } = setup();
+    const { service, gateway, printAssets } = setup();
     await expect(
       service.executeBatch(['order-1'], 'shop-1', 'Desk'),
     ).resolves.toMatchObject({ spooledCount: 1 });
+    expect(printAssets.prepare).toHaveBeenCalledWith(
+      'document.pdf',
+      'shop-1',
+      'order-1',
+      'A4',
+      'LANDSCAPE',
+    );
     expect(gateway.emitBatchExecute).toHaveBeenCalledWith('shop-1', {
       printerName: 'Desk',
       orders: [
@@ -134,6 +141,46 @@ describe('PrintSpoolerService readiness', () => {
       ],
     });
   });
+
+  it('uses legacy portrait and one-copy defaults in preparation and dispatch', async () => {
+    const { service, gateway, printAssets, query } = setup();
+    query.in.mockResolvedValue({
+      data: [
+        {
+          id: 'old',
+          state: 'IN_PRODUCTION',
+          paper_size: 'A4',
+          print_color_mode: 'COLOR',
+          assets: [{ file_url: 'old.pdf' }],
+        },
+      ],
+    });
+    await service.executeBatch(['old'], 'shop-1', 'Desk');
+    expect(printAssets.prepare).toHaveBeenCalledWith(
+      'old.pdf',
+      'shop-1',
+      'old',
+      'A4',
+      'PORTRAIT',
+    );
+    expect(gateway.emitBatchExecute).toHaveBeenCalledWith('shop-1', {
+      printerName: 'Desk',
+      orders: [expect.objectContaining({ orientation: 'PORTRAIT', copies: 1 })],
+    });
+  });
+
+  it.each(['download failed', 'upload failed'])(
+    'never claims jobs when preparation reports %s',
+    async (message) => {
+      const { service, jobs, gateway, printAssets } = setup();
+      printAssets.prepare.mockRejectedValue(new BadRequestException(message));
+      await expect(
+        service.executeBatch(['order-1'], 'shop-1', 'Desk'),
+      ).rejects.toThrow(message);
+      expect(jobs.claimJob).not.toHaveBeenCalled();
+      expect(gateway.emitBatchExecute).not.toHaveBeenCalled();
+    },
+  );
 
   it('allows retry after the agent disconnects before dispatch', async () => {
     const { service, gateway, jobs } = setup();

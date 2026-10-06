@@ -61,14 +61,14 @@ class PrinterService {
     return !printerName || this.printers.includes(printerName);
   }
 
-  print(filePath, { printerName, monochrome, orientation, copies, paperSize }) {
+  print(filePath, { printerName, monochrome, copies, paperSize }) {
     if (!this.has(printerName)) {
       throw new Error('The selected printer is no longer available');
     }
     return this.ptp.print(filePath, {
       ...(printerName ? { printer: printerName } : {}),
       ...(monochrome ? { monochrome: true } : {}),
-      ...(orientation ? { orientation } : {}),
+      // The prepared PDF controls layout; allow automatic paper rotation.
       ...(copies ? { copies } : {}),
       ...(paperSize ? { paperSize } : {}),
     });

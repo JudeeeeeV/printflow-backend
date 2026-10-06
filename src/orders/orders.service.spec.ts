@@ -374,6 +374,11 @@ describe('OrdersService.createOrder', () => {
         total: 6,
       }),
     );
+    expect(printableDocuments.normalize).toHaveBeenCalledWith(
+      file,
+      'A4',
+      'PORTRAIT',
+    );
     const uploadCalls = upload.mock.calls as unknown as Array<
       [string, Buffer, { metadata?: { originalFileName?: string } }]
     >;

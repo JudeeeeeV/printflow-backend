@@ -88,8 +88,6 @@ class JobProcessor {
       await this.printerService.print(tempFile, {
         printerName,
         monochrome: order.print_color_mode === 'BLACK_AND_WHITE',
-        orientation:
-          order.orientation === 'LANDSCAPE' ? 'landscape' : 'portrait',
         copies:
           Number.isInteger(order.copies) && order.copies >= 1 && order.copies <= 99
             ? order.copies
