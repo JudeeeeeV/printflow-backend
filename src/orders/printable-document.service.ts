@@ -29,7 +29,7 @@ const MAX_DOCX_ENTRY_BYTES = positiveInteger(
   'MAX_DOCX_ENTRY_BYTES',
   128 * 1024 * 1024,
 );
-const MAX_NORMALIZED_PDF_BYTES = positiveInteger(
+export const MAX_NORMALIZED_PDF_BYTES = positiveInteger(
   'MAX_NORMALIZED_PDF_BYTES',
   100 * 1024 * 1024,
 );
@@ -50,6 +50,8 @@ const PAPER_SIZES: Record<string, [number, number]> = {
   LONG: [612, 1008],
 };
 
+export type PrintOrientation = 'PORTRAIT' | 'LANDSCAPE';
+
 export interface PrintableDocument {
   buffer: Buffer;
   pageCount: number;
@@ -63,28 +65,64 @@ export class PrintableDocumentService {
   async normalize(
     file: Express.Multer.File,
     paperSize: string,
+    orientation?: PrintOrientation,
   ): Promise<PrintableDocument> {
     return this.withConversionSlot(() =>
-      this.normalizeWithinSlot(file, paperSize),
+      this.normalizeWithinSlot(file, paperSize, orientation),
     );
+  }
+
+  async matchesPrintSettings(
+    buffer: Buffer,
+    paperSize: string,
+    orientation: PrintOrientation,
+  ): Promise<boolean> {
+    return this.withConversionSlot(async () => {
+      try {
+        this.assertNormalizedSize(buffer);
+        const source = await PDFDocument.load(buffer);
+        const pages = source.getPages();
+        if (pages.length < 1) throw new Error('PDF has no pages');
+        if (pages.length > MAX_PDF_PAGES) {
+          throw new PayloadTooLargeException(
+            `PDF files may contain at most ${MAX_PDF_PAGES} pages`,
+          );
+        }
+        const [width, height] = this.orientedPaperSize(
+          paperSize,
+          orientation === 'LANDSCAPE',
+        );
+        return pages.every(
+          (page) =>
+            page.getRotation().angle === 0 &&
+            Math.abs(page.getWidth() - width) < 0.01 &&
+            Math.abs(page.getHeight() - height) < 0.01,
+        );
+      } catch (error) {
+        if (error instanceof PayloadTooLargeException) throw error;
+        throw new BadRequestException('The uploaded PDF is invalid');
+      }
+    });
   }
 
   private async normalizeWithinSlot(
     file: Express.Multer.File,
     paperSize: string,
+    orientation?: PrintOrientation,
   ): Promise<PrintableDocument> {
     if (file.mimetype === 'application/pdf') {
       return this.fitPdfToPaper(
         file.buffer,
         paperSize,
         'The uploaded PDF is invalid',
+        orientation,
       );
     }
     if (file.mimetype.startsWith('image/')) {
-      return this.imageToPdf(file.buffer, paperSize);
+      return this.imageToPdf(file.buffer, paperSize, orientation);
     }
     if (file.mimetype === DOCX_MIME_TYPE) {
-      return this.docxToPdf(file.buffer, paperSize);
+      return this.docxToPdf(file.buffer, paperSize, orientation);
     }
     throw new BadRequestException('Unsupported printable file type');
   }
@@ -93,6 +131,7 @@ export class PrintableDocumentService {
     buffer: Buffer,
     paperSize: string,
     errorMessage: string,
+    orientation?: PrintOrientation,
   ): Promise<PrintableDocument> {
     try {
       const source = await PDFDocument.load(buffer);
@@ -116,7 +155,9 @@ export class PrintableDocumentService {
         const sourceHeight = rotated ? sourceSize.width : sourceSize.height;
         const [pageWidth, pageHeight] = this.orientedPaperSize(
           paperSize,
-          sourceWidth > sourceHeight,
+          orientation
+            ? orientation === 'LANDSCAPE'
+            : sourceWidth > sourceHeight,
         );
         const page = output.addPage([pageWidth, pageHeight]);
         if (!sourcePage.node.Contents()) continue;
@@ -153,6 +194,7 @@ export class PrintableDocumentService {
   private async imageToPdf(
     buffer: Buffer,
     paperSize: string,
+    orientation?: PrintOrientation,
   ): Promise<PrintableDocument> {
     try {
       const normalizedImage = sharp(buffer, {
@@ -164,7 +206,7 @@ export class PrintableDocumentService {
       const image = await pdf.embedPng(png);
       const [pageWidth, pageHeight] = this.orientedPaperSize(
         paperSize,
-        image.width > image.height,
+        orientation ? orientation === 'LANDSCAPE' : image.width > image.height,
       );
       const page = pdf.addPage([pageWidth, pageHeight]);
       const availableWidth = pageWidth - PRINT_MARGIN_POINTS * 2;
@@ -194,6 +236,7 @@ export class PrintableDocumentService {
   private async docxToPdf(
     buffer: Buffer,
     paperSize: string,
+    orientation?: PrintOrientation,
   ): Promise<PrintableDocument> {
     this.assertDocxPackage(buffer);
     const workingDirectory = await mkdtemp(join(tmpdir(), 'printflow-docx-'));
@@ -222,6 +265,7 @@ export class PrintableDocumentService {
         pdf,
         paperSize,
         'The DOCX file could not be converted to a printable PDF',
+        orientation,
       );
     } catch (error) {
       if (

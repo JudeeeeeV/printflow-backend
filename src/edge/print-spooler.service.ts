@@ -113,14 +113,15 @@ export class PrintSpoolerService {
         shopId,
         order.id,
         order.paper_size,
+        order.orientation || 'PORTRAIT',
       );
 
       prepared.push({
         id: order.id,
         file_url: signedUrl,
         print_color_mode: order.print_color_mode,
-        orientation: order.orientation,
-        copies: order.copies,
+        orientation: order.orientation || 'PORTRAIT',
+        copies: order.copies ?? 1,
         paper_size: order.paper_size,
       });
     }

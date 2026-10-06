@@ -1,15 +1,226 @@
 import { BadRequestException, PayloadTooLargeException } from '@nestjs/common';
 import JSZip from 'jszip';
-import { PDFDocument } from 'pdf-lib';
+import {
+  decodePDFRawStream,
+  degrees,
+  PDFArray,
+  PDFDocument,
+  PDFRawStream,
+} from 'pdf-lib';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import sharp from 'sharp';
 import { DOCX_MIME_TYPE } from '../common/upload-security';
-import { PrintableDocumentService } from './printable-document.service';
+import {
+  PrintableDocumentService,
+  type PrintOrientation,
+} from './printable-document.service';
 
 const upload = (mimetype: string, buffer: Buffer) =>
   ({ mimetype, buffer }) as Express.Multer.File;
 
+const paperSizes: Array<[string, number, number]> = [
+  ['A4', 595.28, 841.89],
+  ['SHORT', 612, 792],
+  ['LONG', 612, 1008],
+];
+const orientations: PrintOrientation[] = ['PORTRAIT', 'LANDSCAPE'];
+
+// Inspect the actual drawing transform, not just the output page dimensions.
+function drawingBounds(
+  document: PDFDocument,
+  index: number,
+  width: number,
+  height: number,
+) {
+  const page = document.getPage(index);
+  const contents = page.node.Contents();
+  const streams =
+    contents instanceof PDFArray
+      ? contents
+          .asArray()
+          .map((ref) => document.context.lookup(ref, PDFRawStream))
+      : [contents as PDFRawStream];
+  const commands = streams
+    .map((stream) =>
+      Buffer.from(decodePDFRawStream(stream).decode()).toString(),
+    )
+    .join('\n');
+  let matrix = [1, 0, 0, 1, 0, 0];
+  for (const match of commands.matchAll(
+    /([-\d.eE]+) ([-\d.eE]+) ([-\d.eE]+) ([-\d.eE]+) ([-\d.eE]+) ([-\d.eE]+) cm/g,
+  )) {
+    const [a, b, c, d, e, f] = matrix;
+    const [u, v, w, x, y, z] = match.slice(1).map(Number);
+    matrix = [
+      a * u + c * v,
+      b * u + d * v,
+      a * w + c * x,
+      b * w + d * x,
+      a * y + c * z + e,
+      b * y + d * z + f,
+    ];
+  }
+  const [a, b, c, d, e, f] = matrix;
+  const points = [
+    [0, 0],
+    [width, 0],
+    [0, height],
+    [width, height],
+  ].map(([x, y]) => [a * x + c * y + e, b * x + d * y + f]);
+  for (const [x, y] of points) {
+    expect(x).toBeGreaterThanOrEqual(18 - 0.01);
+    expect(y).toBeGreaterThanOrEqual(18 - 0.01);
+    expect(x).toBeLessThanOrEqual(page.getWidth() - 18 + 0.01);
+    expect(y).toBeLessThanOrEqual(page.getHeight() - 18 + 0.01);
+  }
+  return matrix;
+}
+
 describe('PrintableDocumentService', () => {
   const service = new PrintableDocumentService();
+
+  it.each(paperSizes)(
+    'fits upright and rotated mixed pages to either selected orientation on %s',
+    async (size, width, height) => {
+      const source = await PDFDocument.create();
+      const sourceSizes = [
+        [400, 800],
+        [800, 400],
+        [400, 800],
+        [400, 800],
+      ];
+      sourceSizes.forEach(([w, h], index) => {
+        const page = source.addPage([w, h]);
+        page.drawRectangle({ x: 0, y: 0, width: w, height: h });
+        if (index === 2) page.setRotation(degrees(90));
+        if (index === 3) page.setRotation(degrees(270));
+      });
+      const buffer = Buffer.from(await source.save());
+      for (const orientation of orientations) {
+        const result = await service.normalize(
+          upload('application/pdf', buffer),
+          size,
+          orientation,
+        );
+        const output = await PDFDocument.load(result.buffer);
+        expect(result.pageCount).toBe(4);
+        for (let index = 0; index < 4; index++) {
+          const page = output.getPage(index);
+          expect(page.getWidth()).toBeCloseTo(
+            orientation === 'LANDSCAPE' ? height : width,
+          );
+          expect(page.getHeight()).toBeCloseTo(
+            orientation === 'LANDSCAPE' ? width : height,
+          );
+          expect(page.getRotation().angle).toBe(0);
+          const matrix = drawingBounds(
+            output,
+            index,
+            ...(sourceSizes[index] as [number, number]),
+          );
+          expect(Math.hypot(matrix[0], matrix[1])).toBeCloseTo(
+            Math.hypot(matrix[2], matrix[3]),
+          );
+          if (index < 2) {
+            expect(matrix[1]).toBe(0);
+            expect(matrix[2]).toBe(0);
+            expect(matrix[0]).toBeGreaterThan(0);
+            expect(matrix[3]).toBeGreaterThan(0);
+          }
+        }
+      }
+    },
+  );
+
+  it.each(paperSizes)(
+    'fits portrait and landscape images upright to either orientation on %s',
+    async (size, width, height) => {
+      for (const [imageWidth, imageHeight] of [
+        [80, 40],
+        [40, 80],
+      ]) {
+        const image = await sharp({
+          create: {
+            width: imageWidth,
+            height: imageHeight,
+            channels: 3,
+            background: '#fff',
+          },
+        })
+          .png()
+          .toBuffer();
+        for (const orientation of orientations) {
+          const result = await service.normalize(
+            upload('image/png', image),
+            size,
+            orientation,
+          );
+          const output = await PDFDocument.load(result.buffer);
+          expect(result.pageCount).toBe(1);
+          expect(output.getPage(0).getWidth()).toBeCloseTo(
+            orientation === 'LANDSCAPE' ? height : width,
+          );
+          expect(output.getPage(0).getHeight()).toBeCloseTo(
+            orientation === 'LANDSCAPE' ? width : height,
+          );
+          const matrix = drawingBounds(output, 0, 1, 1);
+          expect(matrix[1]).toBe(0);
+          expect(matrix[2]).toBe(0);
+          expect(matrix[0] / matrix[3]).toBeCloseTo(imageWidth / imageHeight);
+        }
+      }
+    },
+  );
+
+  it('applies selected orientation after DOCX conversion', async () => {
+    const converted = await PDFDocument.create();
+    converted.addPage([400, 800]).drawText('Upright DOCX');
+    const convertedBytes = await converted.save();
+    const archive = new JSZip();
+    archive.file('[Content_Types].xml', '<Types/>');
+    archive.file('word/document.xml', '<document/>');
+    const buffer = await archive.generateAsync({ type: 'nodebuffer' });
+    const converter = service as unknown as {
+      findLibreOffice: () => Promise<string>;
+      runLibreOffice: (executable: string, args: string[]) => Promise<void>;
+    };
+    const find = jest
+      .spyOn(converter, 'findLibreOffice')
+      .mockResolvedValue('mock-office');
+    const run = jest
+      .spyOn(converter, 'runLibreOffice')
+      .mockImplementation(async (_executable, args) => {
+        await writeFile(
+          join(args[args.indexOf('--outdir') + 1], 'document.pdf'),
+          convertedBytes,
+        );
+      });
+    try {
+      for (const [size, width, height] of paperSizes)
+        for (const orientation of orientations) {
+          const result = await service.normalize(
+            upload(DOCX_MIME_TYPE, buffer),
+            size,
+            orientation,
+          );
+          const output = await PDFDocument.load(result.buffer);
+          expect(result.pageCount).toBe(1);
+          expect(output.getPage(0).getWidth()).toBeCloseTo(
+            orientation === 'LANDSCAPE' ? height : width,
+          );
+          expect(output.getPage(0).getHeight()).toBeCloseTo(
+            orientation === 'LANDSCAPE' ? width : height,
+          );
+          const matrix = drawingBounds(output, 0, 400, 800);
+          expect(matrix[1]).toBe(0);
+          expect(matrix[2]).toBe(0);
+        }
+    } finally {
+      find.mockRestore();
+      run.mockRestore();
+    }
+  });
 
   it('fits every PDF page to the selected paper size and preserves orientation', async () => {
     const source = await PDFDocument.create();

@@ -17,7 +17,10 @@ import {
   PRINTABLE_DOCUMENT_MIME_TYPES,
   secureObjectName,
 } from '../common/upload-security';
-import { PrintableDocumentService } from './printable-document.service';
+import {
+  PrintableDocumentService,
+  type PrintOrientation,
+} from './printable-document.service';
 import { isShopOpenNow } from '../shops/shop-availability';
 
 const SHOP_VISIBLE_ORDER_STATES = new Set([
@@ -41,6 +44,37 @@ const isMissingOriginalFilenameColumn = (
     (error.code === '42703' || error.code === 'PGRST204') &&
     error.message?.includes('original_filename'),
   );
+
+interface DraftRow {
+  id: string;
+  shop_id: string;
+  shops?: { name: string } | null;
+  assets?: Array<{ file_url: string; original_filename?: string | null }>;
+  total: number;
+  created_at: string;
+  paper_size: string;
+  print_color_mode: string;
+  page_count: number;
+  order_name?: string | null;
+  orientation?: PrintOrientation | null;
+  copies?: number | null;
+}
+
+interface SubmittedDraftRow {
+  state: string;
+  shop_id: string;
+  paper_size: string;
+  print_color_mode: string;
+  copies?: number | null;
+  draft_version: number;
+}
+
+interface ShopPricingRow {
+  pricing_matrix: {
+    paper_sizes?: Record<string, number>;
+    color_mode_multipliers?: Record<string, number>;
+  } | null;
+}
 
 @Injectable()
 export class OrdersService {
@@ -374,13 +408,11 @@ export class OrdersService {
     }
 
     const mappedData = await Promise.all(
-      (data || []).map(async (order: any) => {
+      ((data || []) as unknown as DraftRow[]).map(async (order) => {
         let fileUrl = '';
         let fileName = 'Design File';
         let storedPath = '';
-        let originalFileName =
-          (order as { assets?: Array<{ original_filename?: string | null }> })
-            .assets?.[0]?.original_filename || null;
+        let originalFileName = order.assets?.[0]?.original_filename || null;
 
         if (
           order.assets &&
@@ -528,7 +560,7 @@ export class OrdersService {
       )
       .eq('id', draftId)
       .eq('client_id', userId)
-      .single();
+      .single<SubmittedDraftRow>();
 
     if (fetchError || !order) {
       throw new NotFoundException('Draft not found');
@@ -556,7 +588,7 @@ export class OrdersService {
       order.paper_size,
       order.print_color_mode,
       pageCount,
-      order.copies,
+      order.copies ?? 1,
     );
 
     const { data: submittedDraft, error: updateError } = await supabase
@@ -634,11 +666,12 @@ export class OrdersService {
       throw new BadRequestException('This shop is currently closed.');
     }
 
-    const pricingMatrix = shop.pricing_matrix;
+    const pricingMatrix = (shop as unknown as ShopPricingRow).pricing_matrix;
 
     const printable = await this.printableDocuments.normalize(
       file,
       payload.paperSize,
+      payload.orientation,
     );
     const pageCount = printable.pageCount;
 
