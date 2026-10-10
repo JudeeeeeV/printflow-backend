@@ -45,5 +45,6 @@ import { AdminTotpMigrationService } from './admin-totp-migration.service';
     AdminAuditInterceptor,
     AdminTotpMigrationService,
   ],
+  exports: [JwtModule],
 })
 export class AdminModule {}
