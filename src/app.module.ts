@@ -15,6 +15,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { createHash } from 'node:crypto';
 import { DaemonDevicesModule } from './daemon-devices/daemon-devices.module';
+import { DataEventsModule } from './events/data-events.module';
 
 @Module({
   imports: [
@@ -111,6 +112,7 @@ import { DaemonDevicesModule } from './daemon-devices/daemon-devices.module';
     DaemonDevicesModule,
     EdgeModule,
     AnalyticsModule,
+    DataEventsModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],
