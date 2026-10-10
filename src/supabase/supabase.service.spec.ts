@@ -56,4 +56,40 @@ describe('SupabaseService', () => {
     );
     expect(service).toBeDefined();
   });
+
+  it('reuses one Supabase client for all requests', () => {
+    const service = new SupabaseService(
+      new ConfigService({
+        SUPABASE_URL: 'https://example.supabase.co',
+        SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-key',
+      }),
+    );
+    expect(service.getAdminClient()).toBe(service.getClient());
+    expect(service.getAdminClient()).toBe(service.getAdminClient());
+  });
+
+  it('checks startup buckets once and secures them concurrently', async () => {
+    const service = new SupabaseService(
+      new ConfigService({
+        SUPABASE_URL: 'https://example.supabase.co',
+        SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-key',
+      }),
+    );
+    const listBuckets = jest.fn().mockResolvedValue({
+      data: [{ name: 'assets', public: true }],
+      error: null,
+    });
+    const createBucket = jest.fn().mockResolvedValue({ error: null });
+    const updateBucket = jest.fn().mockResolvedValue({ error: null });
+    jest.spyOn(service, 'getAdminClient').mockReturnValue({
+      storage: { listBuckets, createBucket, updateBucket },
+    } as unknown as SupabaseClient);
+
+    await service.onModuleInit();
+    await service.ensurePrivateBucket('assets');
+
+    expect(listBuckets).toHaveBeenCalledTimes(1);
+    expect(updateBucket).toHaveBeenCalledWith('assets', { public: false });
+    expect(createBucket).toHaveBeenCalledTimes(4);
+  });
 });

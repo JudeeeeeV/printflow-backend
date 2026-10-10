@@ -11,6 +11,8 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 export class SupabaseService implements OnModuleInit {
   private readonly logger = new Logger(SupabaseService.name);
   private supabase: SupabaseClient;
+  private readonly securedBuckets = new Set<string>();
+  private readonly bucketRequests = new Map<string, Promise<void>>();
 
   constructor(private configService: ConfigService) {
     const supabaseUrl = this.configService.get<string>('SUPABASE_URL');
@@ -37,63 +39,65 @@ export class SupabaseService implements OnModuleInit {
   }
 
   getAdminClient(): SupabaseClient {
-    return createClient(
-      this.configService.get<string>('SUPABASE_URL')!,
-      this.configService.get<string>('SUPABASE_SERVICE_ROLE_KEY')!,
-      {
-        auth: {
-          autoRefreshToken: false,
-          persistSession: false,
-        },
-      },
-    );
+    return this.supabase;
   }
 
   async onModuleInit(): Promise<void> {
-    for (const bucket of [
+    await this.ensurePrivateBuckets([
       'assets',
       'receipts',
       'permits',
       'gcash_qrs',
       'agent-releases',
-    ]) {
-      await this.ensurePrivateBucket(bucket);
-    }
+    ]);
   }
 
   async ensurePrivateBucket(bucket: string): Promise<void> {
+    if (this.securedBuckets.has(bucket)) return;
+    const pending = this.bucketRequests.get(bucket);
+    if (pending) return pending;
+
+    const request = this.ensurePrivateBuckets([bucket]).finally(() => {
+      this.bucketRequests.delete(bucket);
+    });
+    this.bucketRequests.set(bucket, request);
+    return request;
+  }
+
+  private async ensurePrivateBuckets(buckets: string[]): Promise<void> {
+    const requested = [...new Set(buckets)].filter(
+      (bucket) => !this.securedBuckets.has(bucket),
+    );
+    if (!requested.length) return;
+
     const client = this.getAdminClient();
-    const { data: buckets, error: listError } =
+    const { data: existingBuckets, error: listError } =
       await client.storage.listBuckets();
     if (listError) {
       throw new InternalServerErrorException(
-        `Failed to inspect storage bucket ${bucket}`,
+        'Failed to inspect private storage buckets',
       );
     }
 
-    const existing = buckets?.find((candidate) => candidate.name === bucket);
-    if (!existing) {
-      const { error } = await client.storage.createBucket(bucket, {
-        public: false,
-      });
-      if (error) {
-        throw new InternalServerErrorException(
-          `Failed to create storage bucket ${bucket}`,
-        );
-      }
-      return;
-    }
-
-    if (existing.public) {
-      const { error } = await client.storage.updateBucket(bucket, {
-        public: false,
-      });
-      if (error) {
-        throw new InternalServerErrorException(
-          `Failed to secure storage bucket ${bucket}`,
-        );
-      }
-    }
+    const existing = new Map(
+      (existingBuckets || []).map((candidate) => [candidate.name, candidate]),
+    );
+    await Promise.all(
+      requested.map(async (bucket) => {
+        const candidate = existing.get(bucket);
+        const { error } = !candidate
+          ? await client.storage.createBucket(bucket, { public: false })
+          : candidate.public
+            ? await client.storage.updateBucket(bucket, { public: false })
+            : { error: null };
+        if (error) {
+          throw new InternalServerErrorException(
+            `Failed to secure storage bucket ${bucket}`,
+          );
+        }
+        this.securedBuckets.add(bucket);
+      }),
+    );
   }
 
   storagePath(value: string, bucket: string): string {
