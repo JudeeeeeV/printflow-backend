@@ -52,4 +52,13 @@ export class UpdateShopDto {
   @IsString()
   @Matches(/^([01]\d|2[0-3]):[0-5]\d$/)
   closes_at?: string;
+
+  @ValidateIf(
+    (_, value) => value !== undefined && value !== null && value !== '',
+  )
+  @IsString()
+  @Matches(/^09\d{9}$/, {
+    message: 'GCash number must be an 11-digit Philippine mobile number.',
+  })
+  gcash_number?: string | null;
 }

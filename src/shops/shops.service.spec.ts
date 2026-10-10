@@ -62,6 +62,16 @@ describe('Shop locations', () => {
     });
   });
 
+  it('saves and clears the shop GCash number', async () => {
+    await service.updateShop('shop-1', { gcash_number: '09171234567' });
+    expect(query.update).toHaveBeenLastCalledWith({
+      gcash_number: '09171234567',
+    });
+
+    await service.updateShop('shop-1', { gcash_number: '' });
+    expect(query.update).toHaveBeenLastCalledWith({ gcash_number: null });
+  });
+
   it('rejects a zero-length availability window', async () => {
     await expect(
       service.updateShop('shop-1', { opens_at: '08:00', closes_at: '08:00' }),
@@ -100,6 +110,8 @@ describe('Shop locations', () => {
     { availability_override: 'true' },
     { opens_at: '8 AM' },
     { closes_at: '24:00' },
+    { gcash_number: '9171234567' },
+    { gcash_number: '0917123456a' },
   ])('rejects malformed API fields: %j', async (body) => {
     const errors = await validate(plainToInstance(UpdateShopDto, body), {
       whitelist: true,

@@ -135,6 +135,8 @@ export class ShopsService {
       payload.opens_at = updateData.opens_at;
     if (updateData.closes_at !== undefined)
       payload.closes_at = updateData.closes_at;
+    if (updateData.gcash_number !== undefined)
+      payload.gcash_number = updateData.gcash_number?.trim() || null;
     if (
       updateData.opens_at !== undefined &&
       updateData.closes_at !== undefined &&
@@ -154,7 +156,7 @@ export class ShopsService {
       .update(payload)
       .eq('id', shopId)
       .select(
-        'id, name, location, description, latitude, longitude, availability_override, opens_at, closes_at, timezone',
+        'id, name, location, description, latitude, longitude, availability_override, opens_at, closes_at, timezone, gcash_number',
       )
       .single();
 

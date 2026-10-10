@@ -45,6 +45,15 @@ const isMissingOriginalFilenameColumn = (
     error.message?.includes('original_filename'),
   );
 
+const isMissingGcashNumberColumn = (
+  error: { code?: string; message?: string } | null,
+): boolean =>
+  Boolean(
+    error &&
+    (error.code === '42703' || error.code === 'PGRST204') &&
+    error.message?.includes('gcash_number'),
+  );
+
 interface DraftRow {
   id: string;
   shop_id: string;
@@ -358,12 +367,22 @@ export class OrdersService {
 
   async getOrder(userId: string, orderId: string) {
     const supabase = this.supabaseService.getAdminClient();
-    const { data, error } = await supabase
-      .from('orders')
-      .select('*, shops(name, gcash_qr_url), payment_receipts(*)')
-      .eq('id', orderId)
-      .eq('client_id', userId)
-      .single();
+    const fetchOrder = (includeGcashNumber: boolean) =>
+      supabase
+        .from('orders')
+        .select(
+          includeGcashNumber
+            ? '*, shops(name, gcash_number, gcash_qr_url), payment_receipts(*)'
+            : '*, shops(name, gcash_qr_url), payment_receipts(*)',
+        )
+        .eq('id', orderId)
+        .eq('client_id', userId)
+        .single();
+
+    let { data, error } = await fetchOrder(true);
+    if (isMissingGcashNumberColumn(error)) {
+      ({ data, error } = await fetchOrder(false));
+    }
 
     if (error || !data) {
       throw new NotFoundException('Order not found');
