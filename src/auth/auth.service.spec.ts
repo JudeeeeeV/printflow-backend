@@ -33,11 +33,10 @@ describe('AuthService', () => {
         .fn()
         .mockReturnValue({ select: jest.fn().mockReturnValue({ eq }) }),
     };
-    const getAdminClient = jest
-      .fn()
-      .mockReturnValueOnce(authClient)
-      .mockReturnValueOnce(profileClient);
+    const createSessionClient = jest.fn().mockReturnValue(authClient);
+    const getAdminClient = jest.fn().mockReturnValue(profileClient);
     const service = new AuthService({
+      createSessionClient,
       getAdminClient,
     } as unknown as SupabaseService);
 
@@ -51,10 +50,11 @@ describe('AuthService', () => {
     });
     expect(profileClient.from).toHaveBeenCalledWith('users');
     expect(eq).toHaveBeenCalledWith('id', user.id);
+    expect(createSessionClient).toHaveBeenCalledTimes(1);
   });
 
   it('does not query a privileged profile when credentials fail', async () => {
-    const getAdminClient = jest.fn().mockReturnValue({
+    const createSessionClient = jest.fn().mockReturnValue({
       auth: {
         signInWithPassword: jest.fn().mockResolvedValue({
           data: { user: null, session: null },
@@ -63,13 +63,14 @@ describe('AuthService', () => {
       },
     });
     const service = new AuthService({
-      getAdminClient,
+      createSessionClient,
+      getAdminClient: jest.fn(),
     } as unknown as SupabaseService);
 
     await expect(
       service.login({ email: 'student@example.com', password: 'wrong' }),
     ).rejects.toThrow('Invalid credentials');
-    expect(getAdminClient).toHaveBeenCalledTimes(1);
+    expect(createSessionClient).toHaveBeenCalledTimes(1);
   });
 
   it.each(['returned', 'thrown'])(
@@ -85,11 +86,12 @@ describe('AuthService', () => {
       } else {
         signInWithPassword.mockRejectedValue(networkError);
       }
-      const getAdminClient = jest.fn().mockReturnValue({
+      const createSessionClient = jest.fn().mockReturnValue({
         auth: { signInWithPassword },
       });
       const service = new AuthService({
-        getAdminClient,
+        createSessionClient,
+        getAdminClient: jest.fn(),
       } as unknown as SupabaseService);
 
       await expect(
@@ -98,7 +100,7 @@ describe('AuthService', () => {
           password: 'GoodPassword1!',
         }),
       ).rejects.toBeInstanceOf(ServiceUnavailableException);
-      expect(getAdminClient).toHaveBeenCalledTimes(1);
+      expect(createSessionClient).toHaveBeenCalledTimes(1);
     },
   );
 });

@@ -42,6 +42,26 @@ export class SupabaseService implements OnModuleInit {
     return this.supabase;
   }
 
+  /**
+   * Creates an isolated client for operations that establish a user session.
+   * Supabase auth methods such as signInWithPassword and refreshSession mutate
+   * the client's Authorization header. They must never run on the shared
+   * service-role client or later privileged database requests will execute as
+   * that user instead of service_role.
+   */
+  createSessionClient(): SupabaseClient {
+    return createClient(
+      this.configService.get<string>('SUPABASE_URL')!,
+      this.configService.get<string>('SUPABASE_SERVICE_ROLE_KEY')!,
+      {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false,
+        },
+      },
+    );
+  }
+
   async onModuleInit(): Promise<void> {
     await this.ensurePrivateBuckets([
       'assets',
@@ -145,22 +165,37 @@ export class SupabaseService implements OnModuleInit {
     storedValues: Array<string | null | undefined>,
     expiresInSeconds = 300,
   ): Promise<Map<string, string | null>> {
-    const paths = [...new Set(storedValues.map(value =>
-      value ? this.storagePath(value, bucket) : '',
-    ).filter(Boolean))];
+    const paths = [
+      ...new Set(
+        storedValues
+          .map((value) => (value ? this.storagePath(value, bucket) : ''))
+          .filter(Boolean),
+      ),
+    ];
     const signed = new Map<string, string | null>();
     if (!paths.length) return signed;
     const storage = this.getAdminClient().storage.from(bucket);
     // Bound each request while deduplicating shared objects in the queue.
     for (let start = 0; start < paths.length; start += 100) {
       const batch = paths.slice(start, start + 100);
-      const { data, error } = await storage.createSignedUrls(batch, expiresInSeconds);
-      if (error) this.logger.warn(`Could not sign ${bucket} objects: ${error.message}`);
+      const { data, error } = await storage.createSignedUrls(
+        batch,
+        expiresInSeconds,
+      );
+      if (error)
+        this.logger.warn(`Could not sign ${bucket} objects: ${error.message}`);
       for (const item of data || []) {
-        if (item.path) signed.set(item.path, item.error ? null : item.signedUrl || null);
+        if (item.path)
+          signed.set(item.path, item.error ? null : item.signedUrl || null);
       }
     }
-    return new Map(storedValues.filter((value): value is string => Boolean(value))
-      .map(value => [value, signed.get(this.storagePath(value, bucket)) || null]));
+    return new Map(
+      storedValues
+        .filter((value): value is string => Boolean(value))
+        .map((value) => [
+          value,
+          signed.get(this.storagePath(value, bucket)) || null,
+        ]),
+    );
   }
 }

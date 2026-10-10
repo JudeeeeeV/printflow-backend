@@ -19,24 +19,35 @@ export class AuthService {
   constructor(private readonly supabaseService: SupabaseService) {}
 
   async getProfile(userId: string) {
-    const { data, error } = await this.supabaseService.getAdminClient()
-      .from('users').select('first_name, last_name').eq('id', userId).single();
-    if (error || !data) throw new InternalServerErrorException('Unable to load your profile.');
+    const { data, error } = await this.supabaseService
+      .getAdminClient()
+      .from('users')
+      .select('first_name, last_name')
+      .eq('id', userId)
+      .single();
+    if (error || !data)
+      throw new InternalServerErrorException('Unable to load your profile.');
     return { firstName: data.first_name || '', lastName: data.last_name || '' };
   }
 
   async updateProfile(userId: string, dto: UpdateProfileDto) {
-    const { data, error } = await this.supabaseService.getAdminClient()
+    const { data, error } = await this.supabaseService
+      .getAdminClient()
       .from('users')
       .update({ first_name: dto.firstName, last_name: dto.lastName })
-      .eq('id', userId).select('first_name, last_name').single();
-    if (error || !data) throw new InternalServerErrorException('Unable to save your name. Please try again.');
+      .eq('id', userId)
+      .select('first_name, last_name')
+      .single();
+    if (error || !data)
+      throw new InternalServerErrorException(
+        'Unable to save your name. Please try again.',
+      );
     return { firstName: data.first_name, lastName: data.last_name };
   }
 
   async login(loginDto: LoginDto) {
     const { email, password } = loginDto;
-    const supabase = this.supabaseService.getAdminClient();
+    const supabase = this.supabaseService.createSessionClient();
 
     let authResult;
     try {
@@ -109,7 +120,7 @@ export class AuthService {
 
   async refresh(refreshToken: string) {
     const { data, error } = await this.supabaseService
-      .getAdminClient()
+      .createSessionClient()
       .auth.refreshSession({ refresh_token: refreshToken });
     if (
       error ||
@@ -167,10 +178,12 @@ export class AuthService {
     }
 
     // 2. Verify current password
-    const { error: signInError } = await supabase.auth.signInWithPassword({
-      email: user.user.email,
-      password: dto.currentPassword,
-    });
+    const { error: signInError } = await this.supabaseService
+      .createSessionClient()
+      .auth.signInWithPassword({
+        email: user.user.email,
+        password: dto.currentPassword,
+      });
 
     if (signInError) {
       throw new BadRequestException('Incorrect current password.');
