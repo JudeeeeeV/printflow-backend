@@ -15,11 +15,13 @@ import type {
 } from 'express';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
+import { RefreshDto } from './dto/refresh.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { SupabaseAuthGuard } from '../iam/guards/supabase-auth.guard';
 import { Throttle } from '@nestjs/throttler';
 import {
+  bearerToken,
   clearUserCookies,
   readCookie,
   setUserCookies,
@@ -34,6 +36,14 @@ type AuthenticatedRequest = ExpressRequest & {
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
+
+  @Get('login')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  loginPage(@Response() response: ExpressResponse) {
+    const frontendUrl =
+      process.env.FRONTEND_URL || 'http://localhost:5173';
+    return response.redirect(`${frontendUrl}/auth`);
+  }
 
   @Post('login')
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
@@ -50,9 +60,8 @@ export class AuthController {
     );
     return {
       user: session.user,
-      ...(process.env.NODE_ENV !== 'production'
-        ? { token: session.accessToken }
-        : {}),
+      token: session.accessToken,
+      refreshToken: session.refreshToken,
     };
   }
 
@@ -61,8 +70,10 @@ export class AuthController {
   async refresh(
     @Request() request: ExpressRequest,
     @Response({ passthrough: true }) response: ExpressResponse,
+    @Body() body?: RefreshDto,
   ) {
-    const refreshToken = readCookie(request, USER_REFRESH_COOKIE);
+    const refreshToken =
+      readCookie(request, USER_REFRESH_COOKIE) || body?.refreshToken;
     if (!refreshToken)
       throw new UnauthorizedException('Refresh session missing');
     const session = await this.authService.refresh(refreshToken);
@@ -72,7 +83,11 @@ export class AuthController {
       session.refreshToken,
       session.expiresIn,
     );
-    return { user: session.user };
+    return {
+      user: session.user,
+      token: session.accessToken,
+      refreshToken: session.refreshToken,
+    };
   }
 
   @Post('logout')
@@ -80,7 +95,9 @@ export class AuthController {
     @Request() request: ExpressRequest,
     @Response({ passthrough: true }) response: ExpressResponse,
   ) {
-    await this.authService.logout(readCookie(request, USER_ACCESS_COOKIE));
+    const token =
+      bearerToken(request) || readCookie(request, USER_ACCESS_COOKIE);
+    await this.authService.logout(token);
     clearUserCookies(response);
     return { success: true };
   }
@@ -88,7 +105,12 @@ export class AuthController {
   @Get('me')
   @UseGuards(SupabaseAuthGuard)
   me(@Request() request: ExpressRequest & { user?: unknown }) {
-    return { user: request.user };
+    const token =
+      bearerToken(request) || readCookie(request, USER_ACCESS_COOKIE);
+    return {
+      user: request.user,
+      ...(token ? { token } : {}),
+    };
   }
 
   @UseGuards(SupabaseAuthGuard)

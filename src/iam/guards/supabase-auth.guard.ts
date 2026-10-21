@@ -18,8 +18,14 @@ export class SupabaseAuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
+    const queryToken =
+      typeof request.query?.token === 'string' && request.query.token
+        ? request.query.token
+        : undefined;
     const token =
-      bearerToken(request) || readCookie(request, USER_ACCESS_COOKIE);
+      bearerToken(request) ||
+      readCookie(request, USER_ACCESS_COOKIE) ||
+      queryToken;
 
     if (!token) {
       throw new UnauthorizedException(
