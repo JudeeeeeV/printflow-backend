@@ -114,8 +114,16 @@ export class OrdersService {
     pageCount: number,
     copies = 1,
   ): number {
-    const basePrice = Number(pricingMatrix?.paper_sizes?.[paperSize]);
-    const colorAdditive = Number(
+    // Only real numbers or non-blank numeric strings count as prices; Number()
+    // alone would turn null, '', false or [] into 0 and make the order free.
+    const toPrice = (value: unknown): number =>
+      typeof value === 'number'
+        ? value
+        : typeof value === 'string' && value.trim() !== ''
+          ? Number(value)
+          : NaN;
+    const basePrice = toPrice(pricingMatrix?.paper_sizes?.[paperSize]);
+    const colorAdditive = toPrice(
       pricingMatrix?.color_mode_multipliers?.[printColorMode],
     );
     if (
@@ -131,9 +139,12 @@ export class OrdersService {
     ) {
       throw new BadRequestException('Invalid print options or shop pricing');
     }
-    return (
-      Math.round((basePrice + colorAdditive) * pageCount * copies * 100) / 100
-    );
+    const total =
+      Math.round((basePrice + colorAdditive) * pageCount * copies * 100) / 100;
+    if (!Number.isFinite(total)) {
+      throw new BadRequestException('Invalid print options or shop pricing');
+    }
+    return total;
   }
 
   private async getAssetPageCount(orderId: string): Promise<number> {
