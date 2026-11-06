@@ -13,6 +13,10 @@ import {
 } from 'class-validator';
 
 export class CreateOrderDto {
+  @IsOptional()
+  @IsIn(['GCASH', 'CASH_ON_PICKUP'])
+  paymentMethod?: 'GCASH' | 'CASH_ON_PICKUP';
+
   @IsUUID('all', { message: 'Invalid Shop ID format' })
   @IsNotEmpty()
   shopId: string;

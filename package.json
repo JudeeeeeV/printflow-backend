@@ -29,7 +29,8 @@
     "agent:publish:windows": "node scripts/publish-agent-release.js",
     "test:signup-sql": "node scripts/test-signup-migration.cjs",
     "test:security": "jest --config test/security-review.jest.json --runInBand",
-    "test:security-sql": "node scripts/test-security-migration.cjs"
+    "test:security-sql": "node scripts/test-security-migration.cjs",
+    "test:payment-sql": "node scripts/test-payment-workflows.cjs"
   },
   "dependencies": {
     "@nestjs/common": "^11.2.5",

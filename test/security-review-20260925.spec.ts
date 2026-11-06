@@ -135,6 +135,9 @@ describe('Application security regressions', () => {
       draft_version: 0,
       paper_size: 'A4',
       print_color_mode: 'BLACK_AND_WHITE',
+      orientation: 'PORTRAIT',
+      copies: 1,
+      order_name: 'Security regression fixture',
       total: 2,
     };
     const db = database({
@@ -142,6 +145,7 @@ describe('Application security regressions', () => {
       shops: [
         {
           id: 'cheap-shop',
+          availability_override: true,
           verification_status: 'VERIFIED',
           pricing_matrix: {
             paper_sizes: { A4: 2 },
@@ -150,6 +154,7 @@ describe('Application security regressions', () => {
         },
         {
           id: 'expensive-shop',
+          availability_override: true,
           verification_status: 'VERIFIED',
           pricing_matrix: {
             paper_sizes: { A4: 10 },
@@ -183,6 +188,9 @@ describe('Application security regressions', () => {
         shopId: 'expensive-shop',
         paperSize: 'A4',
         printColorMode: 'COLOR',
+        orderName: 'Security regression fixture',
+        orientation: 'PORTRAIT',
+        copies: 1,
       });
       expect(row.total).toBe(30);
     } finally {

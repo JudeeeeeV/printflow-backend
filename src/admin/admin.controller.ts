@@ -17,6 +17,7 @@ import { AdminLoginDto } from './dto/admin-login.dto';
 import { TotpDto } from './dto/totp.dto';
 import { AddAdminDto } from './dto/add-admin.dto';
 import { VerifyShopDto } from './dto/verify-shop.dto';
+import { DisputeDecisionDto } from './dto/dispute-decision.dto';
 import { Throttle } from '@nestjs/throttler';
 import {
   clearAdminCookies,
@@ -132,14 +133,32 @@ export class AdminController {
 
   @Post('orders/:id/force-approve')
   @UseGuards(AdminAuthGuard)
-  async forceApproveOrder(@Param('id') orderId: string) {
-    return this.adminService.forceApproveOrder(orderId);
+  async forceApproveOrder(
+    @Param('id') orderId: string,
+    @Body() body: DisputeDecisionDto,
+    @Req() req: AdminRequest,
+  ) {
+    return this.adminService.forceApproveOrder(
+      orderId,
+      req.user.sub,
+      body.receiptId,
+      body.confirmed,
+    );
   }
 
   @Post('orders/:id/uphold-rejection')
   @UseGuards(AdminAuthGuard)
-  async upholdRejection(@Param('id') orderId: string) {
-    return this.adminService.upholdRejection(orderId);
+  async upholdRejection(
+    @Param('id') orderId: string,
+    @Body() body: DisputeDecisionDto,
+    @Req() req: AdminRequest,
+  ) {
+    return this.adminService.upholdRejection(
+      orderId,
+      req.user.sub,
+      body.receiptId,
+      body.reason,
+    );
   }
 
   @Get('daemon-devices')

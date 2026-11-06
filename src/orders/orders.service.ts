@@ -22,6 +22,7 @@ import {
   type PrintOrientation,
 } from './printable-document.service';
 import { isShopOpenNow } from '../shops/shop-availability';
+import { applyOrderDecision, type PaymentOrder } from './payment-workflow';
 
 const SHOP_VISIBLE_ORDER_STATES = new Set([
   'OPEN_INQUIRY',
@@ -34,6 +35,8 @@ const SHOP_VISIBLE_ORDER_STATES = new Set([
   'READY_FOR_PICKUP',
   'COMPLETED',
   'EXPIRED',
+  'CANCELLED',
+  'REJECTED',
 ]);
 
 const isMissingOriginalFilenameColumn = (
@@ -57,6 +60,7 @@ const isMissingGcashNumberColumn = (
 interface DraftRow {
   id: string;
   shop_id: string;
+  payment_method?: 'GCASH' | 'CASH_ON_PICKUP';
   shops?: { name: string } | null;
   assets?: Array<{ file_url: string; original_filename?: string | null }>;
   total: number;
@@ -221,39 +225,30 @@ export class OrdersService {
 
   @Cron(CronExpression.EVERY_MINUTE)
   async cleanupExpiredOrders() {
-    const supabase = this.supabaseService.getAdminClient();
-    const expiryTime = new Date(Date.now() - 15 * 60000).toISOString();
-
-    const { data: draftData, error: draftError } = await supabase
+    const { data, error } = await this.supabaseService
+      .getAdminClient()
       .from('orders')
-      .delete()
+      .select('id')
       .eq('state', 'OPEN_INQUIRY')
-      .lt('created_at', expiryTime)
-      .select('id');
-
-    if (draftError) {
-      this.logger.error(
-        'Failed to cleanup expired drafts: ' + draftError.message,
-      );
-    } else if (draftData && draftData.length > 0) {
-      this.logger.log(`Cleaned up ${draftData.length} expired drafts.`);
+      .eq('payment_method', 'GCASH')
+      .in('payment_status', ['UNPAID', 'REJECTED'])
+      .lt('expires_at', new Date().toISOString());
+    if (error) {
+      this.logger.error('Failed to inspect payment deadlines.');
+      return;
     }
-
-    // Cleanup AWAITING_PAYMENT orders that have passed their 24-hour expiration window
-    const now = new Date().toISOString();
-    const { data: expiredOrders, error: expiredError } = await supabase
-      .from('orders')
-      .update({ state: 'EXPIRED' })
-      .eq('state', 'AWAITING_PAYMENT')
-      .lt('expires_at', now)
-      .select('id');
-
-    if (expiredError) {
-      this.logger.error(
-        'Failed to expire rejected orders: ' + expiredError.message,
-      );
-    } else if (expiredOrders && expiredOrders.length > 0) {
-      this.logger.log(`Expired ${expiredOrders.length} rejected orders.`);
+    for (const order of (data || []) as Array<{ id: string }>) {
+      try {
+        await applyOrderDecision(
+          this.supabaseService,
+          order.id,
+          null,
+          'SYSTEM',
+          'EXPIRE',
+        );
+      } catch {
+        this.logger.error('Failed to reconcile a payment deadline.');
+      }
     }
   }
 
@@ -275,7 +270,30 @@ export class OrdersService {
       .order('created_at', { ascending: sortByDate === 'asc' });
 
     if (status && status !== 'All') {
-      query = query.eq('state', status);
+      const legacyPaymentFilters: Record<string, string> = {
+        AWAITING_PAYMENT: 'REJECTED',
+        AWAITING_PAYMENT_VERIFICATION: 'PENDING_VERIFICATION',
+        ESCALATED_DISPUTE: 'DISPUTED',
+      };
+      const paymentFilter =
+        legacyPaymentFilters[status] ||
+        ([
+          'UNPAID',
+          'PENDING_VERIFICATION',
+          'VERIFIED',
+          'DISPUTED',
+          'DUE_AT_PICKUP',
+          'COLLECTED',
+          'REFUND_DUE',
+          'REFUNDED',
+          'REVIEW_REQUIRED',
+        ].includes(status)
+          ? status
+          : null);
+      query = query.eq(
+        paymentFilter ? 'payment_status' : 'state',
+        paymentFilter || status,
+      );
     }
 
     const from = (page - 1) * limit;
@@ -417,7 +435,7 @@ export class OrdersService {
       return supabase
         .from('orders')
         .select(
-          `id, total, created_at, shop_id, shops(name), ${assetColumns}, paper_size, print_color_mode, page_count, order_name, orientation, copies`,
+          `id, total, created_at, shop_id, shops(name), ${assetColumns}, paper_size, print_color_mode, page_count, order_name, orientation, copies, payment_method`,
           { count: 'exact' },
         )
         .eq('client_id', userId)
@@ -499,6 +517,7 @@ export class OrdersService {
           orderName: order.order_name,
           orientation: order.orientation,
           copies: order.copies,
+          paymentMethod: order.payment_method || 'GCASH',
         };
       }),
     );
@@ -557,6 +576,9 @@ export class OrdersService {
         print_color_mode: payload.printColorMode,
         total,
         page_count: pageCount,
+        ...(payload.paymentMethod
+          ? { payment_method: payload.paymentMethod }
+          : {}),
         order_name: payload.orderName.trim(),
         orientation: payload.orientation,
         copies: payload.copies,
@@ -565,8 +587,8 @@ export class OrdersService {
       .eq('client_id', userId)
       .eq('state', 'DRAFT')
       .eq('draft_version', order.draft_version)
-      .select('id')
-      .maybeSingle();
+      .select('*')
+      .maybeSingle<PaymentOrder>();
 
     if (updateError) {
       throw new InternalServerErrorException('Failed to update draft.');
@@ -577,10 +599,14 @@ export class OrdersService {
       );
     }
 
-    return { message: 'Draft updated successfully' };
+    return { message: 'Draft updated successfully', order: updatedDraft };
   }
 
-  async submitDraft(userId: string, draftId: string) {
+  async submitDraft(
+    userId: string,
+    draftId: string,
+    paymentMethod?: 'GCASH' | 'CASH_ON_PICKUP',
+  ) {
     const supabase = this.supabaseService.getAdminClient();
 
     const { data: order, error: fetchError } = await supabase
@@ -624,6 +650,7 @@ export class OrdersService {
     const { data: submittedDraft, error: updateError } = await supabase
       .from('orders')
       .update({
+        ...(paymentMethod ? { payment_method: paymentMethod } : {}),
         state: 'OPEN_INQUIRY',
         total,
         page_count: pageCount,
@@ -633,8 +660,8 @@ export class OrdersService {
       .eq('client_id', userId)
       .eq('state', 'DRAFT')
       .eq('draft_version', order.draft_version)
-      .select('id')
-      .maybeSingle();
+      .select('*')
+      .maybeSingle<PaymentOrder>();
 
     if (updateError) {
       throw new InternalServerErrorException('Failed to submit draft.');
@@ -645,7 +672,12 @@ export class OrdersService {
       );
     }
 
-    return { message: 'Draft submitted successfully', orderId: draftId };
+    return {
+      message: 'Draft submitted successfully',
+      orderId: draftId,
+      state: submittedDraft.state,
+      order: submittedDraft,
+    };
   }
 
   async deleteDraft(userId: string, draftId: string) {
@@ -726,6 +758,9 @@ export class OrdersService {
         print_color_mode: payload.printColorMode,
         paper_size: payload.paperSize,
         page_count: pageCount,
+        ...(payload.paymentMethod
+          ? { payment_method: payload.paymentMethod }
+          : {}),
         order_name: payload.orderName.trim(),
         orientation: payload.orientation,
         copies: payload.copies,
@@ -789,6 +824,7 @@ export class OrdersService {
       orderId: order.id,
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment,@typescript-eslint/no-unsafe-member-access
       state: order.state,
+      order: order as PaymentOrder,
     };
   }
 
@@ -806,132 +842,63 @@ export class OrdersService {
     file: Express.Multer.File,
     referenceNumber?: string,
   ) {
-    const supabase = this.supabaseService.getAdminClient();
+    if (
+      typeof referenceNumber !== 'string' ||
+      !referenceNumber.trim() ||
+      referenceNumber.trim().length > 120
+    ) {
+      throw new BadRequestException(
+        'A payment reference of at most 120 characters is required.',
+      );
+    }
     assertFileSignature(file, IMAGE_MIME_TYPES);
-    await this.ensureReceiptsBucket();
-
-    const { data: order, error: fetchError } = await supabase
+    const supabase = this.supabaseService.getAdminClient();
+    const { data: owner, error } = await supabase
       .from('orders')
-      .select('state, shop_id')
+      .select('id')
       .eq('id', orderId)
       .eq('client_id', userId)
       .single();
-
-    if (fetchError || !order) {
-      throw new NotFoundException(
-        'Order not found or you do not have permission to access it.',
-      );
-    }
-
-    if (
-      order.state !== 'PROOF_APPROVED' &&
-      order.state !== 'AWAITING_PAYMENT' &&
-      order.state !== 'OPEN_INQUIRY'
-    ) {
-      throw new BadRequestException(
-        `Cannot upload receipt for an order in ${order.state} state.`,
-      );
-    }
-
-    // Assume bucket exists. User should create it in Supabase Dashboard.
-
+    if (error || !owner) throw new NotFoundException('Order not found.');
+    await this.ensureReceiptsBucket();
     const fileName = secureObjectName(`${userId}/${orderId}`, file.mimetype);
     const { error: uploadError } = await supabase.storage
       .from('receipts')
-      .upload(fileName, file.buffer, {
-        contentType: file.mimetype,
-      });
-
-    if (uploadError) {
+      .upload(fileName, file.buffer, { contentType: file.mimetype });
+    if (uploadError)
       throw new InternalServerErrorException(
-        `Failed to upload receipt image: ${uploadError.message}`,
+        'The receipt image could not be stored.',
       );
-    }
-
-    const { error: receiptError } = await supabase
-      .from('payment_receipts')
-      .insert({
-        order_id: orderId,
-        uploaded_by: userId,
-        receipt_url: fileName,
-        reference_number: referenceNumber || null,
-        verified: false,
-      });
-
-    if (receiptError) {
-      throw new InternalServerErrorException(
-        'Failed to upload receipt record: ' + receiptError.message,
-      );
-    }
-
-    const { data: updatedOrder, error: updateError } = await supabase
-      .from('orders')
-      .update({ state: 'AWAITING_PAYMENT_VERIFICATION' })
-      .eq('id', orderId)
-      .eq('client_id', userId)
-      .in('state', ['PROOF_APPROVED', 'AWAITING_PAYMENT', 'OPEN_INQUIRY'])
-      .select('id')
-      .maybeSingle();
-
-    if (updateError || !updatedOrder) {
-      throw new InternalServerErrorException(
-        'Receipt uploaded, but failed to update order state.',
-      );
-    }
-
-    // Assign notification to the shop ID (clerk_id)
-    await supabase.from('notifications').insert({
-      order_id: orderId,
-      clerk_id: order.shop_id,
-    });
-
+    // A failed/uncertain RPC may already have committed. Retain its private
+    // object rather than deleting a receipt that could now be referenced.
+    const order = await applyOrderDecision(
+      this.supabaseService,
+      orderId,
+      userId,
+      'STUDENT',
+      'UPLOAD_RECEIPT',
+      {
+        receiptPath: fileName,
+        reference: referenceNumber.trim(),
+      },
+    );
     return {
-      message: 'Receipt uploaded successfully. Awaiting verification.',
-      state: 'AWAITING_PAYMENT_VERIFICATION',
+      message: 'Receipt saved. Awaiting payment verification.',
+      state: order.state,
+      order,
     };
   }
 
   async disputePayment(userId: string, orderId: string, reason: string) {
-    const supabase = this.supabaseService.getAdminClient();
-
-    const { data: order, error: fetchError } = await supabase
-      .from('orders')
-      .select('state')
-      .eq('id', orderId)
-      .eq('client_id', userId)
-      .single();
-
-    if (fetchError || !order) {
-      throw new NotFoundException('Order not found or access denied.');
-    }
-
-    // Can only dispute if previously rejected and awaiting payment
-    if (order.state !== 'AWAITING_PAYMENT') {
-      throw new BadRequestException(
-        'Order is not in a state that can be disputed.',
-      );
-    }
-
-    const { data: disputedOrder, error: updateError } = await supabase
-      .from('orders')
-      .update({
-        state: 'ESCALATED_DISPUTE',
-        dispute_reason: reason,
-        expires_at: null, // Clear expiration timer during dispute
-      })
-      .eq('id', orderId)
-      .eq('client_id', userId)
-      .eq('state', 'AWAITING_PAYMENT')
-      .select('id')
-      .maybeSingle();
-
-    if (updateError || !disputedOrder) {
-      throw new InternalServerErrorException(
-        'Failed to escalate dispute because the order changed concurrently',
-      );
-    }
-
-    return { message: 'Payment dispute escalated successfully.' };
+    const order = await applyOrderDecision(
+      this.supabaseService,
+      orderId,
+      userId,
+      'STUDENT',
+      'DISPUTE',
+      { reason },
+    );
+    return { message: 'Payment dispute escalated.', state: order.state, order };
   }
 
   async verifyPayment(
@@ -939,168 +906,101 @@ export class OrdersService {
     orderId: string,
     action: 'APPROVE' | 'REJECT',
     reason?: string,
+    receiptId?: string,
+    confirmed?: boolean,
   ) {
-    const supabase = this.supabaseService.getAdminClient();
-    await this.requireVerifiedShop(clerkId);
+    const order = await applyOrderDecision(
+      this.supabaseService,
+      orderId,
+      clerkId,
+      'SHOP',
+      action === 'APPROVE' ? 'VERIFY' : 'REJECT_RECEIPT',
+      { reason, receiptId, confirmed },
+    );
+    return {
+      message:
+        action === 'APPROVE'
+          ? 'Payment verified.'
+          : 'Receipt rejected; replacement requested.',
+      state: order.state,
+      order,
+    };
+  }
 
-    // In a real app we might verify if clerkId belongs to the shop that owns the order
-    const { data: order, error: fetchError } = await supabase
+  async decideOrder(
+    shopId: string,
+    orderId: string,
+    action: string,
+    data: Record<string, unknown>,
+  ) {
+    await this.requireVerifiedShop(shopId);
+    // Scope the file read before downloading any student's private document.
+    const { data: owned, error } = await this.supabaseService
+      .getAdminClient()
       .from('orders')
-      .select('state, shop_id')
+      .select('id')
       .eq('id', orderId)
-      .eq('shop_id', clerkId)
+      .eq('shop_id', shopId)
       .single();
-
-    if (fetchError || !order) {
-      throw new NotFoundException('Order not found.');
-    }
-
-    if (order.state !== 'AWAITING_PAYMENT_VERIFICATION') {
-      throw new BadRequestException(
-        'Order is not awaiting payment verification.',
-      );
-    }
-
-    if (action === 'APPROVE') {
-      await supabase
-        .from('payment_receipts')
-        .update({ verified: true })
-        .eq('order_id', orderId);
-
-      const { data: approvedOrder, error: updateError } = await supabase
-        .from('orders')
-        .update({ state: 'IN_PRODUCTION' })
-        .eq('id', orderId)
-        .eq('shop_id', clerkId)
-        .eq('state', 'AWAITING_PAYMENT_VERIFICATION')
-        .select('id')
-        .maybeSingle();
-
-      if (updateError || !approvedOrder)
-        throw new InternalServerErrorException('Failed to update order state.');
-
-      // Clear notifications
-      await supabase
-        .from('notifications')
-        .update({ is_read: true })
-        .eq('order_id', orderId);
-
-      return { message: 'Payment approved. Order is now in production.' };
-    } else {
-      // REJECT
-      const expiresAt = new Date(
-        Date.now() + 24 * 60 * 60 * 1000,
-      ).toISOString();
-      const { data: rejectedOrder, error: updateError } = await supabase
-        .from('orders')
-        .update({
-          state: 'AWAITING_PAYMENT',
-          shop_rejection_reason: reason || null,
-          expires_at: expiresAt,
-        })
-        .eq('id', orderId)
-        .eq('shop_id', clerkId)
-        .eq('state', 'AWAITING_PAYMENT_VERIFICATION')
-        .select('id')
-        .maybeSingle();
-
-      if (updateError || !rejectedOrder)
-        throw new InternalServerErrorException('Failed to update order state.');
-
-      // Clear notifications
-      await supabase
-        .from('notifications')
-        .update({ is_read: true })
-        .eq('order_id', orderId);
-
-      return {
-        message: 'Payment rejected. Client has been notified to re-upload.',
-      };
-    }
+    if (error || !owned) throw new NotFoundException('Order not found.');
+    if (action === 'ACCEPT') await this.getAssetPageCount(orderId);
+    const order = await applyOrderDecision(
+      this.supabaseService,
+      orderId,
+      shopId,
+      'SHOP',
+      action,
+      data,
+    );
+    return { message: 'Order decision saved.', state: order.state, order };
   }
 
   async cancelOrder(userId: string, orderId: string) {
-    const supabase = this.supabaseService.getAdminClient();
-
-    const { data: order, error: fetchError } = await supabase
+    const { data, error } = await this.supabaseService
+      .getAdminClient()
       .from('orders')
       .select('state')
       .eq('id', orderId)
       .eq('client_id', userId)
       .single();
-
-    if (fetchError || !order) {
-      throw new NotFoundException('Order not found or access denied.');
-    }
-
-    const cancellableStates = ['DRAFT', 'OPEN_INQUIRY', 'AWAITING_PAYMENT'];
-    if (!cancellableStates.includes(order.state)) {
-      throw new BadRequestException('This order can no longer be cancelled');
-    }
-
-    const { data: deletedOrder, error: deleteError } = await supabase
-      .from('orders')
-      .delete()
-      .eq('id', orderId)
-      .eq('client_id', userId)
-      .in('state', cancellableStates)
-      .select('id')
-      .maybeSingle();
-
-    if (deleteError || !deletedOrder) {
-      throw new InternalServerErrorException(
-        'Failed to cancel order because it changed concurrently',
-      );
-    }
-
-    return { message: 'Order cancelled successfully' };
+    if (error || !data) throw new NotFoundException('Order not found.');
+    if (data.state === 'DRAFT') return this.deleteDraft(userId, orderId);
+    const order = await applyOrderDecision(
+      this.supabaseService,
+      orderId,
+      userId,
+      'STUDENT',
+      'CANCEL',
+    );
+    return {
+      message:
+        'Order cancelled. Any verified payment requires a manual refund.',
+      state: order.state,
+      order,
+    };
   }
 
   async updateOrderState(
     shopId: string,
     orderId: string,
     newState: 'READY_FOR_PICKUP' | 'COMPLETED',
+    confirmed = false,
   ) {
-    const supabase = this.supabaseService.getAdminClient();
-    await this.requireVerifiedShop(shopId);
-
-    const { data: order, error: fetchError } = await supabase
-      .from('orders')
-      .select('state')
-      .eq('id', orderId)
-      .eq('shop_id', shopId)
-      .single();
-
-    if (fetchError || !order) {
-      throw new NotFoundException('Order not found or access denied.');
-    }
-
-    const transitions: Record<string, string[]> = {
-      IN_PRODUCTION: ['READY_FOR_PICKUP'],
-      PRINTED: ['READY_FOR_PICKUP'],
-      READY_FOR_PICKUP: ['COMPLETED'],
+    const order = await applyOrderDecision(
+      this.supabaseService,
+      orderId,
+      shopId,
+      'SHOP',
+      newState,
+      { confirmed },
+    );
+    return {
+      message:
+        newState === 'COMPLETED'
+          ? 'Handover confirmed.'
+          : 'Output confirmed and ready for pickup.',
+      state: order.state,
+      order,
     };
-    if (!transitions[order.state]?.includes(newState)) {
-      throw new BadRequestException(
-        `Cannot transition an order from ${order.state} to ${newState}`,
-      );
-    }
-
-    const { data: updatedOrder, error: updateError } = await supabase
-      .from('orders')
-      .update({ state: newState })
-      .eq('id', orderId)
-      .eq('shop_id', shopId)
-      .eq('state', order.state)
-      .select('id')
-      .maybeSingle();
-
-    if (updateError || !updatedOrder) {
-      throw new InternalServerErrorException(
-        'Failed to update order state because it changed concurrently',
-      );
-    }
-
-    return { message: 'Order state updated successfully', state: newState };
   }
 }

@@ -28,7 +28,7 @@ export class AnalyticsService {
     let query = supabase
       .from('orders')
       .select(
-        'id, total, created_at, state, client_id, page_count, paper_size, print_color_mode, assets(file_url)',
+        'id, total, created_at, state, client_id, page_count, paper_size, print_color_mode, payment_method, payment_status, acceptance_status, assets(file_url)',
       )
       .eq('shop_id', shopId)
       .neq('state', 'DRAFT')
@@ -51,25 +51,23 @@ export class AnalyticsService {
     const allOrders = orders || [];
 
     // State classifications
-    const completedStates = ['READY_FOR_PICKUP', 'COMPLETED', 'PRINTED'];
-    const paidStates = [
-      'IN_PRODUCTION',
-      'READY_FOR_PICKUP',
-      'COMPLETED',
-      'PRINTED',
-    ];
-    const escrowStates = ['AWAITING_PAYMENT', 'AWAITING_PAYMENT_VERIFICATION'];
-
-    // Filter by category
-    const paidOrders = allOrders.filter((o) => paidStates.includes(o.state));
+    const completedStates = ['READY_FOR_PICKUP', 'COMPLETED'];
+    const isPaid = (order: { payment_status: string }) =>
+      ['VERIFIED', 'COLLECTED'].includes(order.payment_status);
+    const isActive = (order: { state: string }) =>
+      !['COMPLETED', 'CANCELLED', 'REJECTED', 'EXPIRED'].includes(order.state);
+    const paidOrders = allOrders.filter(isPaid);
     const completedOrders = allOrders.filter((o) =>
-      completedStates.includes(o.state),
+      completedStates.includes(String(o.state)),
     );
-    const escrowOrders = allOrders.filter((o) =>
-      escrowStates.includes(o.state),
+    const escrowOrders = allOrders.filter(
+      (o) =>
+        isActive(o) &&
+        !isPaid(o) &&
+        !['REFUND_DUE', 'REFUNDED'].includes(String(o.payment_status)),
     );
     const activeOrders = allOrders.filter(
-      (o) => !completedStates.includes(o.state) && o.state !== 'CANCELLED',
+      (o) => isActive(o) && !completedStates.includes(String(o.state)),
     );
 
     // --- KPI Metrics ---
@@ -115,7 +113,7 @@ export class AnalyticsService {
       });
       const existing = timeSeriesMap.get(dateStr) || { revenue: 0, pages: 0 };
 
-      if (paidStates.includes(order.state)) {
+      if (isPaid(order)) {
         existing.revenue += Number(order.total) || 0;
       }
       if (completedStates.includes(order.state)) {
@@ -150,6 +148,9 @@ export class AnalyticsService {
         id: order.id,
         fileName,
         state: order.state,
+        paymentMethod: String(order.payment_method || 'GCASH'),
+        paymentStatus: String(order.payment_status || 'REVIEW_REQUIRED'),
+        acceptanceStatus: String(order.acceptance_status || 'PENDING'),
         total: Number(order.total) || 0,
         pageCount: Number(order.page_count) || 0,
         clientId: order.client_id,
@@ -164,7 +165,9 @@ export class AnalyticsService {
       averageOrderValue: averageOrderValue.toFixed(2),
       activeQueueCount,
       uniqueCustomers,
-      completedOrdersCount: completedOrders.length,
+      completedOrdersCount: allOrders.filter(
+        (order) => order.state === 'COMPLETED',
+      ).length,
       colorSplit,
       paperSplit,
       printVolumeOverTime,
