@@ -50,9 +50,9 @@ describe('OrdersService.calculatePrice', () => {
     ['P24', matrix(), 'A4', 'COLOR', 1, 6],
     ['P25', matrix(), 'A4', 'COLOR', 2, 12],
     ['P26', matrix('3', '3'), 'A4', 'COLOR', 5, 30],
-    ['P27', matrix(null, null), 'A4', 'COLOR', 5, 0],
+    ['P27', matrix(null, null), 'A4', 'COLOR', 5, null],
     ['P28', matrix(0.333, 0.333), 'A4', 'COLOR', 3, 2],
-    ['P29', matrix(Number.MAX_VALUE, 0), 'A4', 'COLOR', 1, Infinity],
+    ['P29', matrix(Number.MAX_VALUE, 0), 'A4', 'COLOR', 1, null],
     ['P30', matrix(), 'A4', 'COLOR', 1001, 6006],
   ])(
     '%s expected result',
