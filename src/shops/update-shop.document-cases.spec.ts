@@ -90,7 +90,7 @@ const cases: DocumentCase[] = [
   { id: 'S49', title: 'reject non-string description', update: { description: null }, expected: 'dto-invalid' },
   { id: 'S50', title: 'clear coordinates while changing the name', update: { name: '  Campus Print  ', latitude: null, longitude: null }, expected: 'save', payload: { name: 'Campus Print', latitude: null, longitude: null } },
   { id: 'S51', title: 'reject invalid coordinates even with a valid name', update: { name: 'Campus Print', latitude: 10 }, expected: 'bad-request' },
-  { id: 'C05', title: 'save availability hours and a trimmed GCash number supported by the current implementation', update: { availability_override: true, opens_at: '08:00', closes_at: '20:00', gcash_number: ' 09171234567 ' }, expected: 'save', payload: { availability_override: true, opens_at: '08:00', closes_at: '20:00', gcash_number: '09171234567' } },
+  { id: 'C05', title: 'save availability hours and a GCash number supported by the current implementation', update: { availability_override: true, opens_at: '08:00', closes_at: '20:00', gcash_number: '09171234567' }, expected: 'save', payload: { availability_override: true, opens_at: '08:00', closes_at: '20:00', gcash_number: '09171234567' } },
   { id: 'C06', title: 'reject identical opening and closing times supported by the current implementation', update: { opens_at: '08:00', closes_at: '08:00' }, expected: 'bad-request', errorMessage: 'Opening and closing times must be different.' },
 ];
 
@@ -109,18 +109,27 @@ describe('Shop test cases from the CITU Software Test Document', () => {
       return;
     }
 
+    if (testCase.expected === 'save') {
+      // Saves must also pass the global ValidationPipe rules, or the HTTP endpoint would return 400 first.
+      const validationErrors = await validate(dto, {
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      });
+      expect(validationErrors).toEqual([]);
+    }
+
     const call = f.service.updateShop('shop-1', dto);
     if (testCase.expected === 'bad-request') {
+      await expect(call).rejects.toBeInstanceOf(BadRequestException);
       if (testCase.errorMessage) {
         await expect(call).rejects.toThrow(testCase.errorMessage);
-      } else {
-        await expect(call).rejects.toBeInstanceOf(BadRequestException);
       }
       expect(f.query.update).not.toHaveBeenCalled();
     } else if (testCase.expected === 'not-found') {
       await expect(call).rejects.toBeInstanceOf(NotFoundException);
       expect(f.query.update).toHaveBeenCalledTimes(1);
     } else if (testCase.expected === 'internal-error') {
+      await expect(call).rejects.toBeInstanceOf(InternalServerErrorException);
       await expect(call).rejects.toThrow(
         new InternalServerErrorException(testCase.errorMessage),
       );

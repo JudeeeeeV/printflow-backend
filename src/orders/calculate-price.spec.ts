@@ -70,6 +70,8 @@ describe('OrdersService.calculatePrice', () => {
   it.each([
     ['C01', 1, 30],
     ['C02', 2, 60],
+    ['C07', 99, 2970],
+    ['C08', 98, 2940],
   ])('%s accepts a valid copy count', (_id, copies, expected) => {
     expect(calculate(matrix(), 'A4', 'COLOR', 5, copies)).toBe(expected);
   });
