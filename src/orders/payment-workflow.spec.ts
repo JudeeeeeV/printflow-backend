@@ -3,15 +3,43 @@ import {
   ConflictException,
   ForbiddenException,
   NotFoundException,
+  Logger,
+  ServiceUnavailableException,
   ValidationPipe,
 } from '@nestjs/common';
-import { applyOrderDecision } from './payment-workflow';
+import { applyOrderDecision, throwPaymentError } from './payment-workflow';
 import { SupabaseService } from '../supabase/supabase.service';
 import { OrderDecisionDto } from './dto/order-decision.dto';
 import { VerifyPaymentDto } from './dto/verify-payment.dto';
 import { UploadReceiptDto } from './dto/upload-receipt.dto';
 
 describe('payment decision RPC boundary', () => {
+  it.each([
+    'function apply_order_decision',
+    'schema public',
+    'table orders',
+    'sequence order_decisions_id_seq',
+  ])(
+    'distinguishes a database permission failure for %s from account authorization',
+    (resource) => {
+      const log = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      try {
+        expect(() =>
+          throwPaymentError({
+            code: '42501',
+            message: `permission denied for ${resource}`,
+          }),
+        ).toThrow(ServiceUnavailableException);
+        expect(log).toHaveBeenCalledWith(
+          'Payment database permission denied. Check the service-role client and payment migration grants.',
+        );
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
   const order = {
     id: 'order',
     state: 'OPEN_INQUIRY',

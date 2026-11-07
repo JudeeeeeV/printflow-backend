@@ -11,6 +11,8 @@ Payment method, shop acceptance, and payment status are independent of the order
 
 The implementation does not run these migrations automatically. No target database or production deployment is part of local validation.
 
+If receipt submission and cancellation report an account-permission error, check `has_function_privilege('service_role', 'public.apply_order_decision(uuid,uuid,text,text,jsonb)', 'EXECUTE')`. A `false` result means the backend cannot call the transaction. Apply `20261107020000_payment_rpc_permissions.sql` through the normal migration process using the function owner (normally the Supabase SQL Editor's `postgres` role). This repeatable repair grants only the backend service role and keeps `PUBLIC`, `anon`, and `authenticated` excluded. Existing ownership and role checks remain enforced inside the function. Already-installed databases need only the repair migration; do not replay the original table-creation migration. Recheck for `service_role = true` and `authenticated = false`, then retry the actions.
+
 ## API
 
 - Creation and draft editing accept `paymentMethod: GCASH | CASH_ON_PICKUP`. Draft submission optionally accepts the same field. Submitted orders lock the method.

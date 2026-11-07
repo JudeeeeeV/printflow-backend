@@ -62,6 +62,29 @@ async function main() {
       await decide(id,'UPLOAD_RECEIPT',{receiptPath:'private/receipt.png',reference},student,'STUDENT');
       return (await row(id)).current_receipt_id;
     };
+    // Reproduce a deployed function with no backend EXECUTE grant, then repair
+    // it using the additive migration rather than replaying the original DDL.
+    const permissionRepairOrder = await create();
+    await db.exec('revoke execute on function public.apply_order_decision(uuid,uuid,text,text,jsonb) from service_role');
+    await db.exec('set role service_role');
+    try {
+      await assert.rejects(() => decide(permissionRepairOrder,'CANCEL',{},student,'STUDENT'), /permission denied for function/);
+    } finally { await db.exec('reset role'); }
+    const permissionRepair = readFileSync('supabase/migrations/20261107020000_payment_rpc_permissions.sql','utf8');
+    await db.exec(permissionRepair);
+    await db.exec(permissionRepair); // Safe if operators apply the repair twice.
+    assert.equal(await scalar("select has_function_privilege('anon','public.apply_order_decision(uuid,uuid,text,text,jsonb)','EXECUTE')"),false);
+    assert.equal(await scalar("select has_function_privilege('authenticated','public.apply_order_decision(uuid,uuid,text,text,jsonb)','EXECUTE')"),false);
+    // Exercise the actual backend database role, not only the migration owner.
+    // Browser roles must remain unable to execute this privileged transaction.
+    assert.equal(await scalar("select has_function_privilege('service_role','public.apply_order_decision(uuid,uuid,text,text,jsonb)','EXECUTE')"),true);
+    const studentActions = await create();
+    await db.exec('set role service_role');
+    try {
+      await decide(studentActions,'UPLOAD_RECEIPT',{receiptPath:'private/student.png',reference:'student-role-reference'},student,'STUDENT');
+      const cancelledStudentOrder = await decide(studentActions,'CANCEL',{},student,'STUDENT');
+      assert.equal(cancelledStudentOrder.state,'CANCELLED');
+    } finally { await db.exec('reset role'); }
     const gcash = await create();
     await assert.rejects(() => db.query("update public.orders set state='IN_PRODUCTION' where id=$1",[gcash]), /Acceptance/);
     await assert.rejects(() => decide(gcash,'ACCEPT'), /proof is required/);
