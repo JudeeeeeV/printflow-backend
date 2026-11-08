@@ -105,6 +105,26 @@ export class PrintableDocumentService {
     });
   }
 
+  async getPdfPageCount(buffer: Buffer): Promise<number> {
+    return this.withConversionSlot(async () => {
+      try {
+        this.assertNormalizedSize(buffer);
+        const source = await PDFDocument.load(buffer);
+        const pageCount = source.getPageCount();
+        if (pageCount < 1) throw new Error('PDF has no pages');
+        if (pageCount > MAX_PDF_PAGES) {
+          throw new PayloadTooLargeException(
+            `PDF files may contain at most ${MAX_PDF_PAGES} pages`,
+          );
+        }
+        return pageCount;
+      } catch (error) {
+        if (error instanceof PayloadTooLargeException) throw error;
+        throw new BadRequestException('The stored PDF is invalid');
+      }
+    });
+  }
+
   private async normalizeWithinSlot(
     file: Express.Multer.File,
     paperSize: string,

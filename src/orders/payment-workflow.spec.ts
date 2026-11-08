@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  InternalServerErrorException,
   NotFoundException,
   Logger,
   ServiceUnavailableException,
@@ -12,8 +13,31 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { OrderDecisionDto } from './dto/order-decision.dto';
 import { VerifyPaymentDto } from './dto/verify-payment.dto';
 import { UploadReceiptDto } from './dto/upload-receipt.dto';
+import { createClient } from '@supabase/supabase-js';
+import { OrderDecisionUnavailableException } from '../common/order-decision-unavailable.exception';
 
 describe('payment decision RPC boundary', () => {
+  it.each(['57014', '40P01', 'PGRST202', 'unsafe detail\n'])(
+    'logs only a safe code for an unexpected database failure: %s',
+    (code) => {
+      const log = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      try {
+        expect(() =>
+          throwPaymentError({ code, message: 'Private database detail' }),
+        ).toThrow(InternalServerErrorException);
+        expect(log).toHaveBeenCalledWith(
+          `Order decision database request failed [code=${code === 'unsafe detail\n' ? 'UNKNOWN' : code}].`,
+        );
+        expect(JSON.stringify(log.mock.calls)).not.toContain(
+          'Private database detail',
+        );
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
   it.each([
     'function apply_order_decision',
     'schema public',
@@ -47,7 +71,9 @@ describe('payment decision RPC boundary', () => {
     acceptance_status: 'PENDING',
   };
   it('binds actor, order, action and receipt without inferring production from payment', async () => {
-    const rpc = jest.fn().mockResolvedValue({ data: order, error: null });
+    const rpc = jest.fn().mockReturnValue({
+      abortSignal: jest.fn().mockResolvedValue({ data: order, error: null }),
+    });
     const service = {
       getAdminClient: () => ({ rpc }),
     } as unknown as SupabaseService;
@@ -71,6 +97,7 @@ describe('payment decision RPC boundary', () => {
     expect(result.state).toBe('OPEN_INQUIRY');
   });
   it.each([
+    ['55P03', ConflictException],
     ['40001', ConflictException],
     ['23505', ConflictException],
     ['42501', ForbiddenException],
@@ -81,8 +108,10 @@ describe('payment decision RPC boundary', () => {
     async (code, exception) => {
       const service = {
         getAdminClient: () => ({
-          rpc: jest.fn().mockResolvedValue({
-            error: { code, message: 'internal database detail' },
+          rpc: jest.fn().mockReturnValue({
+            abortSignal: jest.fn().mockResolvedValue({
+              error: { code, message: 'internal database detail' },
+            }),
           }),
         }),
       } as unknown as SupabaseService;
@@ -94,6 +123,158 @@ describe('payment decision RPC boundary', () => {
       ).rejects.not.toThrow('internal database detail');
     },
   );
+  it('explains a database lock conflict without exposing database details', () => {
+    expect(() =>
+      throwPaymentError({
+        code: '55P03',
+        message: 'Private transaction detail',
+      }),
+    ).toThrow(
+      'Another action is updating this order. Refresh its status and try again shortly.',
+    );
+  });
+  describe('database connection failures', () => {
+    let log: jest.SpyInstance;
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      log = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      log.mockRestore();
+      jest.useRealTimers();
+    });
+
+    function serviceWithFetch(fetch: typeof globalThis.fetch) {
+      // The installed SDK runs against an injected fetch; no network or real
+      // database is used. This covers its empty-code transport error responses.
+      const client = createClient('https://database.example.test', 'test-key', {
+        auth: { persistSession: false, autoRefreshToken: false },
+        global: { fetch },
+      });
+      return { getAdminClient: () => client } as unknown as SupabaseService;
+    }
+
+    it('aborts a stalled decision after 15 seconds without retrying the write', async () => {
+      const fetch = jest
+        .fn<
+          ReturnType<typeof globalThis.fetch>,
+          Parameters<typeof globalThis.fetch>
+        >()
+        .mockImplementation(
+          (_url, options) =>
+            new Promise((_resolve, reject) => {
+              options?.signal?.addEventListener('abort', () =>
+                reject(new DOMException('Request aborted', 'AbortError')),
+              );
+            }),
+        );
+      const decision = applyOrderDecision(
+        serviceWithFetch(fetch),
+        'order',
+        'shop',
+        'SHOP',
+        'ACCEPT',
+      );
+      const assertion = expect(decision).rejects.toBeInstanceOf(
+        OrderDecisionUnavailableException,
+      );
+      await jest.advanceTimersByTimeAsync(15_000);
+      await assertion;
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith(
+        'Order decision connection failed [code=REQUEST_TIMEOUT, httpStatus=0, durationMs=15000].',
+      );
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('identifies a transport cause without logging private error details', async () => {
+      const fetch = jest
+        .fn<
+          ReturnType<typeof globalThis.fetch>,
+          Parameters<typeof globalThis.fetch>
+        >()
+        .mockRejectedValue(
+          new TypeError('Private upstream address', {
+            cause: Object.assign(new Error('Private connection detail'), {
+              code: 'ECONNRESET',
+            }),
+          }),
+        );
+      await expect(
+        applyOrderDecision(
+          serviceWithFetch(fetch),
+          'order',
+          'shop',
+          'SHOP',
+          'ACCEPT',
+        ),
+      ).rejects.toBeInstanceOf(OrderDecisionUnavailableException);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith(
+        'Order decision connection failed [code=ECONNRESET, httpStatus=0, durationMs=0].',
+      );
+      expect(JSON.stringify(log.mock.calls)).not.toContain('Private');
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('handles an upstream gateway failure without exposing its response', async () => {
+      const fetch = jest
+        .fn<
+          ReturnType<typeof globalThis.fetch>,
+          Parameters<typeof globalThis.fetch>
+        >()
+        .mockResolvedValue(
+          new Response('Private gateway detail', { status: 502 }),
+        );
+      await expect(
+        applyOrderDecision(
+          serviceWithFetch(fetch),
+          'order',
+          'shop',
+          'SHOP',
+          'ACCEPT',
+        ),
+      ).rejects.toBeInstanceOf(OrderDecisionUnavailableException);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith(
+        'Order decision connection failed [code=UPSTREAM_UNAVAILABLE, httpStatus=502, durationMs=0].',
+      );
+      expect(JSON.stringify(log.mock.calls)).not.toContain('Private');
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('returns an accepted cash order and clears the deadline after a successful response', async () => {
+      const accepted = {
+        ...order,
+        state: 'IN_PRODUCTION',
+        payment_method: 'CASH_ON_PICKUP',
+        payment_status: 'DUE_AT_PICKUP',
+        acceptance_status: 'ACCEPTED',
+      };
+      const fetch = jest
+        .fn<
+          ReturnType<typeof globalThis.fetch>,
+          Parameters<typeof globalThis.fetch>
+        >()
+        .mockResolvedValue(Response.json(accepted));
+      await expect(
+        applyOrderDecision(
+          serviceWithFetch(fetch),
+          'order',
+          'shop',
+          'SHOP',
+          'ACCEPT',
+        ),
+      ).resolves.toEqual(accepted);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(log).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    });
+  });
   it('does not accept client actor identities, lifecycle shortcuts, or missing receipt identity', async () => {
     const pipe = new ValidationPipe({
       whitelist: true,

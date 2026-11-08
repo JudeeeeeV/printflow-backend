@@ -171,14 +171,11 @@ export class OrdersService {
       throw new BadRequestException('Draft asset could not be validated');
     }
     try {
-      const printable = await this.printableDocuments.normalize(
-        {
-          mimetype: 'application/pdf',
-          buffer: Buffer.from(await blob.arrayBuffer()),
-        } as Express.Multer.File,
-        'A4',
+      // The stored document was normalized during upload. Validate and count it
+      // without rebuilding every page just to inspect an existing order.
+      return await this.printableDocuments.getPdfPageCount(
+        Buffer.from(await blob.arrayBuffer()),
       );
-      return printable.pageCount;
     } catch {
       throw new BadRequestException('Draft PDF is invalid');
     }
@@ -909,6 +906,23 @@ export class OrdersService {
     receiptId?: string,
     confirmed?: boolean,
   ) {
+    if (action === 'APPROVE') {
+      await this.requireVerifiedShop(clerkId);
+      const { data: owned, error } = await this.supabaseService
+        .getAdminClient()
+        .from('orders')
+        .select('id, state')
+        .eq('id', orderId)
+        .eq('shop_id', clerkId)
+        .single<{ id: string; state: string }>();
+      if (error || !owned) throw new NotFoundException('Order not found.');
+      // Approval also authorizes production. Inspect the owned printable PDF
+      // first, while closed-order payment reviews can still create refunds.
+      if (
+        !['CANCELLED', 'REJECTED', 'EXPIRED', 'COMPLETED'].includes(owned.state)
+      )
+        await this.getAssetPageCount(orderId);
+    }
     const order = await applyOrderDecision(
       this.supabaseService,
       orderId,

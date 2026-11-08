@@ -80,6 +80,28 @@ function drawingBounds(
 describe('PrintableDocumentService', () => {
   const service = new PrintableDocumentService();
 
+  it('counts stored PDF pages without rewriting the document', async () => {
+    const source = await PDFDocument.create();
+    source.addPage([400, 800]).drawText('First page');
+    source.addPage([800, 400]).drawText('Second page');
+    const buffer = Buffer.from(await source.save());
+    const original = Buffer.from(buffer);
+    await expect(service.getPdfPageCount(buffer)).resolves.toBe(2);
+    expect(buffer.equals(original)).toBe(true);
+  });
+
+  it('rejects malformed and empty stored PDFs', async () => {
+    await expect(
+      service.getPdfPageCount(Buffer.from('not a PDF')),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    const empty = await PDFDocument.create();
+    await expect(
+      service.getPdfPageCount(
+        Buffer.from(await empty.save({ addDefaultPage: false })),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
   it.each(paperSizes)(
     'fits upright and rotated mixed pages to either selected orientation on %s',
     async (size, width, height) => {
@@ -286,6 +308,10 @@ describe('PrintableDocumentService', () => {
     expect(accepted.pageCount).toBe(1_000);
 
     source.addPage([10, 10]);
+
+    await expect(
+      service.getPdfPageCount(Buffer.from(await source.save())),
+    ).rejects.toBeInstanceOf(PayloadTooLargeException);
 
     await expect(
       service.normalize(

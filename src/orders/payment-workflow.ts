@@ -7,7 +7,9 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import type { PostgrestSingleResponse } from '@supabase/supabase-js';
 import { SupabaseService } from '../supabase/supabase.service';
+import { OrderDecisionUnavailableException } from '../common/order-decision-unavailable.exception';
 
 export type PaymentMethod = 'GCASH' | 'CASH_ON_PICKUP';
 
@@ -23,10 +25,51 @@ export interface PaymentOrder {
 
 const paymentLogger = new Logger('PaymentWorkflow');
 
-export function throwPaymentError(error: {
-  code?: string;
-  message?: string;
-}): never {
+export function throwPaymentError(
+  error: { code?: string; message?: string; details?: string },
+  context: {
+    httpStatus?: number;
+    timedOut?: boolean;
+    durationMs?: number;
+  } = {},
+): never {
+  const transportCode = [
+    'UND_ERR_CONNECT_TIMEOUT',
+    'UND_ERR_HEADERS_TIMEOUT',
+    'UND_ERR_BODY_TIMEOUT',
+    'UND_ERR_SOCKET',
+    'ECONNRESET',
+    'ECONNREFUSED',
+    'ENOTFOUND',
+    'EAI_AGAIN',
+    'ETIMEDOUT',
+    'CERT_HAS_EXPIRED',
+    'DEPTH_ZERO_SELF_SIGNED_CERT',
+    'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  ].find((code) =>
+    `${error.code || ''} ${error.message || ''} ${error.details || ''}`.includes(
+      code,
+    ),
+  );
+  if (
+    context.timedOut ||
+    context.httpStatus === 0 ||
+    transportCode ||
+    (!error.code && (context.httpStatus || 0) >= 500)
+  ) {
+    const code = context.timedOut
+      ? 'REQUEST_TIMEOUT'
+      : transportCode || 'UPSTREAM_UNAVAILABLE';
+    paymentLogger.error(
+      `Order decision connection failed [code=${code}, httpStatus=${context.httpStatus ?? 0}, durationMs=${context.durationMs ?? 0}].`,
+    );
+    throw new OrderDecisionUnavailableException();
+  }
+  if (error.code === '55P03') {
+    throw new ConflictException(
+      'Another action is updating this order. Refresh its status and try again shortly.',
+    );
+  }
   if (error.code === '40001' || error.code === '23505') {
     throw new ConflictException(
       'The order or receipt changed. Refresh and review it before trying again.',
@@ -57,6 +100,12 @@ export function throwPaymentError(error: {
       'Check the order eligibility, required reason/reference, and confirmation.',
     );
   }
+  // Preserve a useful diagnostic without logging database messages, SQL,
+  // document paths, receipt references, or request payloads.
+  const code = /^(?:[A-Z0-9]{5}|PGRST\d{3})$/.test(error.code || '')
+    ? error.code
+    : 'UNKNOWN';
+  paymentLogger.error(`Order decision database request failed [code=${code}].`);
   throw new InternalServerErrorException(
     'The order decision could not be saved.',
   );
@@ -70,16 +119,35 @@ export async function applyOrderDecision(
   action: string,
   data: Record<string, unknown> = {},
 ): Promise<PaymentOrder> {
-  const result = await supabaseService
-    .getAdminClient()
-    .rpc('apply_order_decision', {
-      p_order: orderId,
-      p_actor: actorId,
-      p_actor_type: actorType,
-      p_action: action,
-      p_data: data,
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  const startedAt = Date.now();
+  let result: PostgrestSingleResponse<unknown>;
+  try {
+    result = await supabaseService
+      .getAdminClient()
+      .rpc('apply_order_decision', {
+        p_order: orderId,
+        p_actor: actorId,
+        p_actor_type: actorType,
+        p_action: action,
+        p_data: data,
+      })
+      .abortSignal(controller.signal);
+  } catch {
+    paymentLogger.error(
+      'Order decision connection failed before a response was received.',
+    );
+    throw new OrderDecisionUnavailableException();
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (result.error)
+    throwPaymentError(result.error, {
+      httpStatus: result.status,
+      timedOut: controller.signal.aborted,
+      durationMs: Date.now() - startedAt,
     });
-  if (result.error) throwPaymentError(result.error);
   if (!result.data || typeof result.data !== 'object') {
     throw new InternalServerErrorException(
       'The order decision returned no result.',

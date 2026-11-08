@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { OrderDecisionUnavailableException } from './order-decision-unavailable.exception';
 
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
@@ -32,7 +33,10 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       );
       response.status(status).json({
         statusCode: status,
-        message: 'An internal error occurred',
+        message:
+          exception instanceof OrderDecisionUnavailableException
+            ? exception.message
+            : 'An internal error occurred',
         requestId,
       });
       return;
