@@ -14,6 +14,7 @@ import type {
   Response as ExpressResponse,
 } from 'express';
 import { AuthService } from './auth.service';
+import { TurnstileService } from './turnstile.service';
 import { LoginDto } from './dto/login.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
@@ -35,7 +36,10 @@ type AuthenticatedRequest = ExpressRequest & {
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly turnstile: TurnstileService,
+  ) {}
 
   @Get('login')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
@@ -51,6 +55,7 @@ export class AuthController {
     @Body() loginDto: LoginDto,
     @Response({ passthrough: true }) response: ExpressResponse,
   ) {
+    await this.turnstile.assertHuman(loginDto.captchaToken);
     const session = await this.authService.login(loginDto);
     setUserCookies(
       response,

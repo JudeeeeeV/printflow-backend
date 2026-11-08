@@ -35,7 +35,7 @@ describe('Auth dual-token & cookie fallback', () => {
       }),
       logout: jest.fn().mockResolvedValue(undefined),
     };
-    controller = new AuthController(authService as AuthService);
+    controller = new AuthController(authService as AuthService, { assertHuman: jest.fn() } as never);
   });
 
   it('login returns token and refreshToken even in production', async () => {

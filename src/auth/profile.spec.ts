@@ -30,7 +30,7 @@ describe('account profile', () => {
       single: jest.fn().mockResolvedValue({ data: { first_name: 'Ana', last_name: 'Cruz' }, error: null }),
     };
     const service = new AuthService({ getAdminClient: () => ({ from: () => query }) } as unknown as SupabaseService);
-    const controller = new AuthController(service);
+    const controller = new AuthController(service, {} as never);
     const request = { user: { id: 'signed-in-user', role: 'STUDENT' } } as Parameters<AuthController['getProfile']>[0];
     expect(await controller.getProfile(request)).toEqual({ firstName: 'Ana', lastName: 'Cruz' });
     expect(await controller.updateProfile(request, { firstName: 'Ana', lastName: 'Cruz' })).toEqual({ firstName: 'Ana', lastName: 'Cruz' });
