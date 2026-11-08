@@ -9,6 +9,7 @@ import { DeviceConnectionRegistry } from '../src/daemon-devices/device-connectio
 import { DaemonDevicesService } from '../src/daemon-devices/daemon-devices.service';
 import { SupabaseService } from '../src/supabase/supabase.service';
 import { PrintJobsRepository } from '../src/edge/repositories/print-jobs.repository';
+import { PrintAssetService } from '../src/edge/print-asset.service';
 import { Test } from '@nestjs/testing';
 import { JwtService } from '@nestjs/jwt';
 import {
@@ -291,6 +292,7 @@ describe('Application security regressions', () => {
         { provide: DaemonDevicesService, useValue: devices },
         { provide: SupabaseService, useValue: {} },
         { provide: PrintJobsRepository, useValue: {} },
+        { provide: PrintAssetService, useValue: {} },
       ],
     }).compile();
     const app = module.createNestApplication();
@@ -333,7 +335,7 @@ describe('Application security regressions', () => {
       expect(devices.validateAgentToken).toHaveBeenCalledTimes(1);
       expect(devices.updatePrinters).not.toHaveBeenCalled();
       expect(
-        app.get(EdgeDaemonGateway).emitBatchExecute('shop', { jobs: [] }),
+        app.get(EdgeDaemonGateway).emitPrintCommands('shop', 'device', []),
       ).toBe(false);
     } finally {
       socket?.disconnect();

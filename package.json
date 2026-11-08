@@ -1,6 +1,6 @@
 {
   "name": "printflow-backend",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "description": "",
   "author": "",
   "private": true,
@@ -17,7 +17,7 @@
     "start:prod": "node dist/src/main",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",
-    "test:agent": "node --test agent/printer-options.test.cjs",
+    "test:agent": "node --test agent/printer-options.test.cjs agent/attempt-journal.test.cjs",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
@@ -30,6 +30,7 @@
     "test:signup-sql": "node scripts/test-signup-migration.cjs",
     "test:security": "jest --config test/security-review.jest.json --runInBand",
     "test:security-sql": "node scripts/test-security-migration.cjs",
+    "test:print-sql": "node scripts/test-print-jobs.cjs && node scripts/test-print-attempts.cjs",
     "test:payment-sql": "node scripts/test-payment-workflows.cjs"
   },
   "dependencies": {

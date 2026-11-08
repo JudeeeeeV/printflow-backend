@@ -2,6 +2,7 @@ import { PrintAssetService } from './print-asset.service';
 import { SupabaseService } from '../supabase/supabase.service';
 import { PrintableDocumentService } from '../orders/printable-document.service';
 import sharp from 'sharp';
+import { createHash } from 'node:crypto';
 import { degrees, PDFDocument } from 'pdf-lib';
 
 function setup(buffer: Buffer, type: string) {
@@ -53,13 +54,19 @@ describe('PrintAssetService', () => {
       service.prepare('original.png', 'shop', 'order', 'A4'),
     ).resolves.toBe('https://example.test/print.pdf');
     const calls = storage.upload.mock.calls as [string, Buffer, unknown][];
-    expect(calls[0][0]).toBe('print-ready/shop/order-A4-PORTRAIT.pdf');
+    expect(calls[0][0]).toEqual(
+      expect.stringMatching(
+        new RegExp(`^print-ready/shop/order-A4-PORTRAIT-[a-f0-9]{16}\\.pdf$`),
+      ),
+    );
     const document = await PDFDocument.load(calls[0][1]);
     expect(document.getPageCount()).toBe(1);
     expect(document.getPage(0).getWidth()).toBeCloseTo(595.28);
     expect(supabase.createSignedStorageUrl).toHaveBeenCalledWith(
       'assets',
-      'print-ready/shop/order-A4-PORTRAIT.pdf',
+      expect.stringMatching(
+        new RegExp(`^print-ready/shop/order-A4-PORTRAIT-[a-f0-9]{16}\\.pdf$`),
+      ),
       3600,
     );
   });
@@ -109,8 +116,12 @@ describe('PrintAssetService', () => {
           orientation === 'LANDSCAPE' ? 595.28 : 841.89,
         );
         expect(output.getPageCount()).toBe(1);
-        expect(calls[retry][0]).toBe(
-          `print-ready/shop/order-A4-${orientation}.pdf`,
+        expect(calls[retry][0]).toEqual(
+          expect.stringMatching(
+            new RegExp(
+              `^print-ready/shop/order-A4-${orientation}-[a-f0-9]{16}\\.pdf$`,
+            ),
+          ),
         );
         expect(calls[retry][2]).toEqual({
           contentType: 'application/pdf',
@@ -130,7 +141,11 @@ describe('PrintAssetService', () => {
       expect(first.getPage(0).getSize()).toEqual(second.getPage(0).getSize());
       expect(supabase.createSignedStorageUrl).toHaveBeenLastCalledWith(
         'assets',
-        `print-ready/shop/order-A4-${orientation}.pdf`,
+        expect.stringMatching(
+          new RegExp(
+            `^print-ready/shop/order-A4-${orientation}-[a-f0-9]{16}\\.pdf$`,
+          ),
+        ),
         3600,
       );
     },
@@ -172,7 +187,11 @@ describe('PrintAssetService', () => {
     expect(storage.upload).not.toHaveBeenCalled();
     await service.prepare('draft.pdf', 'shop', 'order', 'LONG', 'PORTRAIT');
     const calls = storage.upload.mock.calls as [string, Buffer, unknown][];
-    expect(calls[0][0]).toBe('print-ready/shop/order-LONG-PORTRAIT.pdf');
+    expect(calls[0][0]).toEqual(
+      expect.stringMatching(
+        new RegExp(`^print-ready/shop/order-LONG-PORTRAIT-[a-f0-9]{16}\\.pdf$`),
+      ),
+    );
     const output = await PDFDocument.load(calls[0][1]);
     expect(output.getPage(0).getSize()).toEqual({ width: 612, height: 1008 });
   });
@@ -238,6 +257,47 @@ describe('PrintAssetService', () => {
     await expect(
       service.prepare('broken.png', 'shop', 'order', 'A4'),
     ).rejects.toThrow();
+    expect(storage.upload).not.toHaveBeenCalled();
+  });
+});
+
+describe('PrintAssetService pinned printable files', () => {
+  it('returns the checksum and size of exactly the uploaded bytes', async () => {
+    const image = await sharp({
+      create: { width: 20, height: 30, channels: 3, background: '#fff' },
+    })
+      .png()
+      .toBuffer();
+    const { service, storage } = setup(image, 'image/png');
+    const pinned = await service.preparePinned(
+      'original.png',
+      'shop',
+      'order',
+      'A4',
+    );
+    const [path, bytes] = (
+      storage.upload.mock.calls as unknown as [string, Buffer][]
+    )[0];
+    expect(pinned.path).toBe(path);
+    expect(pinned.size).toBe(bytes.length);
+    expect(pinned.sha256).toBe(
+      createHash('sha256').update(bytes).digest('hex'),
+    );
+    expect(path).toContain(pinned.sha256.slice(0, 16));
+  });
+
+  it('pins an already-printable PDF to its stored path without rewriting it', async () => {
+    const source = await PDFDocument.create();
+    source.addPage([595.28, 841.89]);
+    const buffer = Buffer.from(await source.save());
+    const { service, storage } = setup(buffer, 'application/pdf');
+    await expect(
+      service.preparePinned('ready.pdf', 'shop', 'order', 'A4'),
+    ).resolves.toEqual({
+      path: 'ready.pdf',
+      size: buffer.length,
+      sha256: createHash('sha256').update(buffer).digest('hex'),
+    });
     expect(storage.upload).not.toHaveBeenCalled();
   });
 });

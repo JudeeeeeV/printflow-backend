@@ -146,11 +146,14 @@ begin
     if o.payment_status = 'COLLECTED' then return to_jsonb(o); end if;
     if o.payment_method <> 'CASH_ON_PICKUP' or o.payment_status <> 'DUE_AT_PICKUP' or o.state::text <> 'READY_FOR_PICKUP'
       or o.acceptance_status <> 'ACCEPTED' or not public.order_has_valid_asset(o.id)
+      or o.output_confirmed_at is null
+      or exists(select 1 from public.print_jobs j where j.order_id = o.id and j.resolved_at is null)
       or coalesce((p_data->>'confirmed')::boolean, false) is not true then
       raise exception 'Confirm full cash collection at pickup' using errcode = '23514';
     end if;
     o.payment_status := 'COLLECTED'; o.cash_collected_at := now(); amount_value := o.total;
     next_state := 'COMPLETED';
+    o.handed_over_at := now(); o.handed_over_by := p_actor;
     o.is_unclaimed := false; o.unclaimed_at := null; o.unclaimed_reason := null;
   elsif p_action = 'RECORD_REFUND' then
     if o.payment_status = 'REFUNDED' and reference_value = o.refund_reference then return to_jsonb(o); end if;
@@ -169,15 +172,6 @@ begin
     if not o.is_unclaimed then return to_jsonb(o); end if;
     if o.state::text <> 'READY_FOR_PICKUP' then raise exception 'Order is not awaiting pickup' using errcode = '40001'; end if;
     o.is_unclaimed := false; o.unclaimed_at := null; o.unclaimed_reason := null;
-  elsif p_action in ('READY_FOR_PICKUP', 'COMPLETED') then
-    if o.state::text = p_action then return to_jsonb(o); end if;
-    if (p_action = 'READY_FOR_PICKUP' and o.state::text not in ('IN_PRODUCTION', 'PRINTED'))
-      or (p_action = 'COMPLETED' and o.state::text <> 'READY_FOR_PICKUP')
-      or coalesce((p_data->>'confirmed')::boolean, false) is not true then
-      raise exception 'Confirm output or handover from the appropriate order state' using errcode = '40001';
-    end if;
-    next_state := p_action;
-    if p_action = 'COMPLETED' then o.is_unclaimed := false; o.unclaimed_at := null; o.unclaimed_reason := null; end if;
   elsif p_action = 'EXPIRE' then
     if o.state::text <> 'OPEN_INQUIRY' or o.production_authorized or o.payment_method <> 'GCASH'
       or o.payment_status not in ('UNPAID', 'REJECTED') or o.expires_at is null or o.expires_at > now() then
@@ -203,14 +197,19 @@ begin
     payment_verified_at = o.payment_verified_at, cash_collected_at = o.cash_collected_at,
     refunded_at = o.refunded_at, refund_reference = o.refund_reference,
     is_unclaimed = o.is_unclaimed, unclaimed_at = o.unclaimed_at, unclaimed_reason = o.unclaimed_reason,
-    expires_at = o.expires_at, shop_rejection_reason = o.shop_rejection_reason, dispute_reason = o.dispute_reason
+    expires_at = o.expires_at, shop_rejection_reason = o.shop_rejection_reason, dispute_reason = o.dispute_reason,
+    handed_over_at = o.handed_over_at, handed_over_by = o.handed_over_by
   where id = o.id returning * into o;
   insert into public.order_decisions(order_id, actor_id, actor_role, action, receipt_id, amount, reason,
     reference, previous_status, new_status)
     values(o.id, p_actor, actor_role, p_action, coalesce(receipt_key, o.current_receipt_id), amount_value, note,
       reference_value, before_row, to_jsonb(o));
+  if p_action = 'COLLECT_CASH' then
+    insert into public.order_fulfillment_events (order_id, shop_id, event_type, attempt_id, actor_id)
+    values (o.id, o.shop_id, 'HANDED_OVER', o.output_confirmed_attempt_id, p_actor);
+  end if;
   return to_jsonb(o);
-end $$;
+end $;
 
 alter function public.apply_order_decision(uuid, uuid, text, text, jsonb)
   set lock_timeout = '3s';

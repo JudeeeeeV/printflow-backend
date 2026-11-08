@@ -4,6 +4,27 @@ Payment method, shop acceptance, and payment status are independent of the order
 
 ## Deployment
 
+**Priority #4 integration:** The main branch's print-attempt migrations
+`20261108000000_print_attempts_and_fulfillment.sql` and
+`20261108010000_print_attempt_revision_ref.sql` own output checks, print attempts,
+and recorded GCash handovers. Run them before the renumbered cash expiry/guard repairs
+`20261108011000` and `20261108012000`; then apply the remaining Priority #1
+migrations up to `20261108060000`. Finally apply
+`20261108070000_integrate_payment_print_fulfillment.sql`, which adds payment
+eligibility to attempt creation and agent authorization, allows the main
+fulfillment function to clear unclaimed flags, and drops the obsolete claim RPC.
+Do not invoke the older `READY_FOR_PICKUP`/`COMPLETED` payment decisions:
+use the Priority #4 output-check and GCash handover endpoints instead.
+Cash collection is the only combined collection-and-handover action; it now
+requires confirmed output and no unresolved print attempt.
+
+The former cash migration filenames at `20261108000000` and
+`20261108010000` were changed because Supabase migration versions must be
+unique. This reconciliation assumes these files have **not** already been
+recorded on a shared database. If they have, reconcile that database's
+migration history before deployment instead of blindly renaming/replaying them.
+
+
 1. Back up and review the target database through the normal deployment process.
 2. Apply `20261106000000_payment_order_states.sql` and commit it before applying `20261106010000_separate_payment_workflows.sql`. New PostgreSQL enum values cannot be used before their transaction commits.
 3. Deploy the backend, then the updated frontend and admin app. Older clients default to GCash when creating orders. Receipt-review and fulfillment clients must send the new evidence/confirmation fields; outdated review requests fail safely.
@@ -21,7 +42,7 @@ minute that deleted **all** `OPEN_INQUIRY` orders older than 15 minutes using
 clearing `expires_at` does not stop that older worker. The current backend only
 expires eligible GCash orders through `apply_order_decision`.
 
-Apply `20261108000000_protect_cash_orders_from_expiry.sql` after the payment
+Apply `20261108011000_protect_cash_orders_from_expiry.sql` after the payment
 workflow migrations through the normal database deployment process. It clears
 cash deadlines, prevents new cash expiry transitions, and skips deletion of
 submitted cash orders, including the old timed cleanup query. Draft deletion,
@@ -99,13 +120,13 @@ prove the cause of a timeout. Continuing failures still need the live activity
 and backend diagnostics investigated.
 
 If the trigger inventory is missing `guard_order_payment_workflow`, apply
-`20261108010000_restore_payment_guard.sql` using the function/table owner after
+`20261108012000_restore_payment_guard.sql` using the function/table owner after
 the preceding payment migrations. It restores the guard, initializes cash
 drafts/inquiries still marked `UNPAID` and `PENDING` to `DUE_AT_PICKUP`, and limits
 decision RPC lock waits to three seconds. It preserves accepted/closed orders
 and existing decision history. Reapplying it is safe. A missing
 `zz_guard_cash_order_expiry` also requires the preceding
-`20261108000000_protect_cash_orders_from_expiry.sql`. Do not replay the original
+`20261108011000_protect_cash_orders_from_expiry.sql`. Do not replay the original
 table-creation migration against an existing installation.
 
 The backend maps PostgreSQL `55P03` to HTTP 409 with refresh/retry guidance.

@@ -1,6 +1,14 @@
-const io = require('socket.io-client');
+// Development-only printer agent that speaks the attempt protocol (v2).
+// It never prints: each attempt walks RECEIVED -> DOWNLOADING -> SUBMITTING ->
+// SUBMITTED, which is still only a submission report. Operators confirm output.
+//
+//   PRINTFLOW_DAEMON_ACCESS_TOKEN=<device access token> node scripts/mock-daemon.js <shopId> [--fail]
+//
+// --fail reports FAILED_PRE_SUBMISSION instead, to exercise the Retry flow.
+const { io } = require('socket.io-client');
 
 const SHOP_ID = process.argv[2];
+const FAIL = process.argv.includes('--fail');
 const ACCESS_TOKEN = process.env.PRINTFLOW_DAEMON_ACCESS_TOKEN;
 const URL = `${process.env.PRINTFLOW_BACKEND_URL || 'http://localhost:3000'}/daemon`;
 
@@ -12,56 +20,65 @@ console.log(`Starting mock daemon for shop: ${SHOP_ID}`);
 
 const socket = io(URL, {
   query: { shopId: SHOP_ID, role: 'daemon' },
-  auth: { token: ACCESS_TOKEN },
+  auth: {
+    token: ACCESS_TOKEN,
+    agentVersion: 'mock',
+    protocolVersion: 2,
+    capabilities: ['attempt-reporting-v1'],
+  },
 });
+const sequences = new Map();
+const seen = new Set();
+
+async function report(command, status, extra = {}) {
+  const sequence = (sequences.get(command.attemptId) || 0) + 1;
+  sequences.set(command.attemptId, sequence);
+  const event = {
+    attemptId: command.attemptId,
+    orderId: command.orderId,
+    sequence,
+    status,
+    occurredAt: new Date().toISOString(),
+    ...extra,
+  };
+  const ack = await socket.timeout(10_000).emitWithAck('attempt_event', event);
+  console.log(`attempt ${command.attemptId.slice(0, 8)} #${sequence} ${status}:`, ack);
+}
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 socket.on('connect', () => {
-  console.log(`Daemon Connected with socket ID: ${socket.id}`);
+  console.log(`Daemon connected with socket ID: ${socket.id}`);
+  socket.emit('daemon_printers_update', { printers: ['Mock Printer'] });
 });
+socket.on('disconnect', () => console.log('Daemon disconnected'));
 
-socket.on('disconnect', () => {
-  console.log('Daemon Disconnected');
-});
-
-socket.on('batch_execute', (payload) => {
-  console.log('Received batch_execute command with payload:', payload);
-
-  const { orders } = payload;
-  if (!orders || !Array.isArray(orders)) {
-    console.error('Invalid payload format');
-    return;
+socket.on('print_attempts', async ({ commands = [], redelivery } = {}) => {
+  console.log(`Received ${commands.length} command(s)${redelivery ? ' (redelivery)' : ''}`);
+  for (const command of commands) {
+    if (seen.has(command.attemptId)) continue; // duplicate delivery
+    seen.add(command.attemptId);
+    await report(command, 'RECEIVED');
+    await delay(1000);
+    await report(command, 'DOWNLOADING');
+    await delay(1000);
+    if (FAIL) {
+      await report(command, 'FAILED_PRE_SUBMISSION', {
+        failurePhase: 'DOWNLOADING',
+        errorCode: 'MOCK_FAILURE',
+        errorMessage: 'Simulated failure before submission.',
+      });
+      continue;
+    }
+    const authorization = await socket
+      .timeout(10_000)
+      .emitWithAck('attempt_authorize', { attemptId: command.attemptId });
+    if (!authorization.authorized) {
+      console.log(`Not authorized: ${authorization.reason}`);
+      continue;
+    }
+    await report(command, 'SUBMITTING');
+    await delay(1000);
+    await report(command, 'SUBMITTED');
   }
-
-  orders.forEach((order, index) => {
-    const delay = (index + 1) * 2000; // stagger the updates
-
-    // Simulate downloading
-    setTimeout(() => {
-      console.log(`Simulating DOWNLOAD for order ${order.id}`);
-      socket.emit('job_status_update', {
-        orderId: order.id,
-        status: 'DOWNLOADING',
-      });
-    }, delay);
-
-    // Simulate sending to spooler
-    setTimeout(() => {
-      console.log(
-        `Simulating SPOOLER for order ${order.id}. Color Mode: ${order.print_color_mode}`,
-      );
-      socket.emit('job_status_update', {
-        orderId: order.id,
-        status: 'SENT_TO_SPOOLER',
-      });
-    }, delay + 2000);
-
-    // Simulate completion
-    setTimeout(() => {
-      console.log(`Simulating COMPLETED for order ${order.id}`);
-      socket.emit('job_status_update', {
-        orderId: order.id,
-        status: 'COMPLETED',
-      });
-    }, delay + 4000);
-  });
 });

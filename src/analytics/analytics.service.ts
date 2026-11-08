@@ -50,13 +50,20 @@ export class AnalyticsService {
 
     const allOrders = orders || [];
 
-    // State classifications
-    const completedStates = ['READY_FOR_PICKUP', 'COMPLETED'];
-    const isPaid = (order: { payment_status: string }) =>
-      ['VERIFIED', 'COLLECTED'].includes(order.payment_status);
-    const isActive = (order: { state: string }) =>
-      !['COMPLETED', 'CANCELLED', 'REJECTED', 'EXPIRED'].includes(order.state);
-    const paidOrders = allOrders.filter(isPaid);
+    // State classifications. Only a recorded handover completes an order;
+    // reprints are attempts on the same order, so they never add orders,
+    // pages or revenue.
+    const completedStates = ['COMPLETED'];
+    const paidStates = [
+      'IN_PRODUCTION',
+      'READY_FOR_PICKUP',
+      'COMPLETED',
+      'PRINTED',
+    ];
+    const escrowStates = ['AWAITING_PAYMENT', 'AWAITING_PAYMENT_VERIFICATION'];
+
+    // Filter by category
+    const paidOrders = allOrders.filter((o) => paidStates.includes(o.state));
     const completedOrders = allOrders.filter((o) =>
       completedStates.includes(String(o.state)),
     );

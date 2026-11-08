@@ -238,12 +238,12 @@ export class OrdersController {
     @Body() body: UpdateOrderStateDto,
     @Req() req: OrderRequest,
   ) {
-    const shopId = req.user.id;
-    return this.ordersService.updateOrderState(
-      shopId,
-      orderId,
-      body.state,
-      body.confirmed,
-    );
+    const shopId = (req as any).user.id;
+    return this.ordersService.updateOrderState(shopId, orderId, body.state, {
+      expectedAttemptId: body.expectedAttemptId,
+      confirmed: body.confirmed,
+      checks: body.checks,
+      reconciliationReason: body.reconciliationReason,
+    });
   }
 }

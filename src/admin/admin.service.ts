@@ -340,7 +340,7 @@ export class AdminService {
       { receiptId, confirmed },
     );
     return {
-      message: 'Payment verified. Shop acceptance remains a separate decision.',
+      message: 'Payment verified. Eligible GCash orders are authorized for production.',
       state: order.state,
       order,
     };
