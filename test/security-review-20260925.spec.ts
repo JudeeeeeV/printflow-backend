@@ -247,6 +247,7 @@ describe('Application security regressions', () => {
       jwt,
       {} as any,
       { decrypt: () => secret } as any,
+      {} as any,
     );
     const code = speakeasy.totp({ secret, encoding: 'base32' });
     const result = await Promise.allSettled([

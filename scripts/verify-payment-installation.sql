@@ -8,7 +8,7 @@ with expected(name, signature, source_hash) as (
   values
     ('apply_order_decision',
      'public.apply_order_decision(uuid,uuid,text,text,jsonb)',
-     '318c0742ab7136bc224a273da318952f'),
+     'eb9809e53d14f87bf59a0f6d56e20b2a'),
     ('order_has_valid_asset', 'public.order_has_valid_asset(uuid)',
      '62719e5bf089e21ce3ed0b17e82ffb8a'),
     ('guard_order_payment_workflow', 'public.guard_order_payment_workflow()',

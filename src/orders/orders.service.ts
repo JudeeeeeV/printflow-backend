@@ -21,6 +21,7 @@ import {
   PrintableDocumentService,
   type PrintOrientation,
 } from './printable-document.service';
+import { validateStoredOrderDocument } from './stored-order-document';
 import { isShopOpenNow } from '../shops/shop-availability';
 import { applyOrderDecision, type PaymentOrder } from './payment-workflow';
 import {
@@ -909,19 +910,25 @@ export class OrdersService {
       throw new InternalServerErrorException(
         'The receipt image could not be stored.',
       );
-    // A failed/uncertain RPC may already have committed. Retain its private
-    // object rather than deleting a receipt that could now be referenced.
-    const order = await applyOrderDecision(
-      this.supabaseService,
-      orderId,
-      userId,
-      'STUDENT',
-      'UPLOAD_RECEIPT',
-      {
-        receiptPath: fileName,
-        reference: referenceNumber.trim(),
-      },
-    );
+    let order: PaymentOrder;
+    try {
+      order = await applyOrderDecision(
+        this.supabaseService, orderId, userId, 'STUDENT', 'UPLOAD_RECEIPT',
+        { receiptPath: fileName, reference: referenceNumber.trim() },
+      );
+    } catch (decisionError) {
+      // Only definite rejections rolled back. A timeout may already have committed.
+      if (decisionError instanceof BadRequestException || decisionError instanceof ConflictException ||
+        decisionError instanceof ForbiddenException || decisionError instanceof NotFoundException) {
+        try {
+          const { error: cleanupError } = await supabase.storage.from('receipts').remove([fileName]);
+          if (cleanupError) this.logger.warn('Could not remove a rejected receipt upload.');
+        } catch {
+          this.logger.warn('Could not remove a rejected receipt upload.');
+        }
+      }
+      throw decisionError;
+    }
     return {
       message: 'Receipt saved. Awaiting payment verification.',
       state: order.state,
@@ -964,7 +971,7 @@ export class OrdersService {
       if (
         !['CANCELLED', 'REJECTED', 'EXPIRED', 'COMPLETED'].includes(owned.state)
       )
-        await this.getAssetPageCount(orderId);
+        await validateStoredOrderDocument(this.supabaseService, this.printableDocuments, orderId);
     }
     const order = await applyOrderDecision(
       this.supabaseService,
@@ -1000,7 +1007,7 @@ export class OrdersService {
       .eq('shop_id', shopId)
       .single();
     if (error || !owned) throw new NotFoundException('Order not found.');
-    if (action === 'ACCEPT') await this.getAssetPageCount(orderId);
+    if (action === 'ACCEPT') await validateStoredOrderDocument(this.supabaseService, this.printableDocuments, orderId);
     const order = await applyOrderDecision(
       this.supabaseService,
       orderId,

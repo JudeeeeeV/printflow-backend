@@ -10,6 +10,8 @@ describe('payment-based analytics', () => {
         payment_method: 'GCASH',
         payment_status: 'VERIFIED',
         total: 20,
+        print_color_mode: 'COLOR',
+        paper_size: 'SHORT',
       },
       {
         id: 'cash-due',
@@ -46,14 +48,21 @@ describe('payment-based analytics', () => {
         payment_status: 'REVIEW_REQUIRED',
         total: 70,
       },
+      ...['DRAFT', 'CANCELLED', 'REJECTED', 'EXPIRED'].map((state) => ({
+        id: `unpaid-${state}`,
+        state,
+        payment_method: 'GCASH',
+        payment_status: 'UNPAID',
+        total: 100,
+      })),
     ].map((order) => ({
-      ...order,
       page_count: 2,
       print_color_mode: 'BLACK_AND_WHITE',
       paper_size: 'A4',
       client_id: 'student',
       assets: [],
       created_at: '2026-11-06T01:00:00Z',
+      ...order,
     }));
     const query = {
       select: jest.fn().mockReturnThis(),
@@ -70,7 +79,17 @@ describe('payment-based analytics', () => {
     const result = await service.getShopAnalytics('shop');
     expect(result.totalRevenue).toBe('60.00');
     expect(result.pendingRevenue).toBe('100.00');
+    expect(result.averageOrderValue).toBe('30.00');
+    expect(result.activeQueueCount).toBe(3);
+    expect(result.totalPagesPrinted).toBe(2);
+    expect(result.completedOrdersCount).toBe(1);
+    expect(result.colorSplit).toEqual({ color: 1, bw: 1 });
+    expect(result.paperSplit).toEqual({ SHORT: 1, A4: 1, LONG: 0 });
     expect(result.printVolumeOverTime[0].revenue).toBe(60);
+    expect(result.printVolumeOverTime[0].pages).toBe(2);
+    expect(
+      result.printVolumeOverTime.reduce((sum, day) => sum + day.revenue, 0),
+    ).toBe(Number(result.totalRevenue));
     expect(
       result.recentOrders.find((order) => order.id === 'cash-due')
         ?.paymentStatus,

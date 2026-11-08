@@ -6,6 +6,17 @@ import {
 } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 
+interface OrderStatus {
+  state: string;
+  payment_status?: string | null;
+}
+
+const isPaid = (order: OrderStatus): boolean =>
+  order.payment_status === 'VERIFIED' || order.payment_status === 'COLLECTED';
+
+const isActive = (order: OrderStatus): boolean =>
+  !['DRAFT', 'CANCELLED', 'REJECTED', 'EXPIRED', 'COMPLETED'].includes(order.state);
+
 @Injectable()
 export class AnalyticsService {
   private readonly logger = new Logger(AnalyticsService.name);
@@ -54,16 +65,9 @@ export class AnalyticsService {
     // reprints are attempts on the same order, so they never add orders,
     // pages or revenue.
     const completedStates = ['COMPLETED'];
-    const paidStates = [
-      'IN_PRODUCTION',
-      'READY_FOR_PICKUP',
-      'COMPLETED',
-      'PRINTED',
-    ];
-    const escrowStates = ['AWAITING_PAYMENT', 'AWAITING_PAYMENT_VERIFICATION'];
 
     // Filter by category
-    const paidOrders = allOrders.filter((o) => paidStates.includes(o.state));
+    const paidOrders = allOrders.filter(isPaid);
     const completedOrders = allOrders.filter((o) =>
       completedStates.includes(String(o.state)),
     );
@@ -73,9 +77,7 @@ export class AnalyticsService {
         !isPaid(o) &&
         !['REFUND_DUE', 'REFUNDED'].includes(String(o.payment_status)),
     );
-    const activeOrders = allOrders.filter(
-      (o) => isActive(o) && !completedStates.includes(String(o.state)),
-    );
+    const activeOrders = allOrders.filter(isActive);
 
     // --- KPI Metrics ---
     const totalRevenue = paidOrders.reduce(

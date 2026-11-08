@@ -1,3 +1,4 @@
+import { PrintableDocumentService } from '../orders/printable-document.service';
 import { AdminService } from './admin.service';
 import { SupabaseService } from '../supabase/supabase.service';
 import { JwtService } from '@nestjs/jwt';
@@ -38,6 +39,7 @@ function fixture(enabled = true) {
     { sign } as unknown as JwtService,
     {} as DaemonDevicesService,
     { decrypt: () => secret } as unknown as TotpEncryptionService,
+      {} as PrintableDocumentService,
   );
   return {
     service,
@@ -55,6 +57,7 @@ describe('AdminService', () => {
       {} as JwtService,
       {} as DaemonDevicesService,
       {} as TotpEncryptionService,
+      {} as PrintableDocumentService,
     );
     expect(service).toBeDefined();
   });

@@ -95,6 +95,11 @@ export function throwPaymentError(
     );
   }
   if (error.code === 'P0002') throw new NotFoundException('Order not found.');
+  if (error.code === '23514' && ['SHOP_NOT_VERIFIED', 'DOCUMENT_NOT_VALID'].includes(error.details || '')) {
+    throw new ConflictException(error.details === 'SHOP_NOT_VERIFIED'
+      ? 'The shop must be verified before authorizing production.'
+      : 'A valid stored document is required before verifying payment. Restore it and retry.');
+  }
   if (error.code === '23514' || error.code === '22P02') {
     throw new BadRequestException(
       'Check the order eligibility, required reason/reference, and confirmation.',

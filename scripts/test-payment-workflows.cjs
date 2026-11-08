@@ -431,7 +431,6 @@ async function main() {
     await decide(invalidVerifiedInquiry,'VERIFY',{receiptId:await receipt(invalidVerifiedInquiry),confirmed:true});
     const pendingCash = await create('CASH_ON_PICKUP');
     const excludedGcashIds = [pendingInquiry,invalidVerifiedInquiry,pendingCash,cancelled];
-    const excludedGcashBefore = await Promise.all(excludedGcashIds.map(row));
     // Priority #4's fulfillment tables/fields must exist before the final payment RPC.
     await db.exec(`
       alter table public.orders add column output_confirmed_attempt_id uuid,
@@ -445,6 +444,7 @@ async function main() {
         created_at timestamptz default now()
       );
     `);
+    const excludedGcashBefore = await Promise.all(excludedGcashIds.map(row));
     const gcashVerification = readFileSync('supabase/migrations/20261108060000_authorize_gcash_on_verification.sql','utf8');
     await db.exec(gcashVerification);await db.exec(gcashVerification);
     const recoveredVerifiedInquiry = await row(verifiedInquiry);
@@ -495,6 +495,7 @@ async function main() {
     const rejectedCash=await create('CASH_ON_PICKUP');
     await decide(rejectedCash,'REJECT_ORDER',{reason:'Cannot fulfill'});
     assert.equal((await row(rejectedCash)).state,'REJECTED');
+    await db.exec(readFileSync('supabase/migrations/20261108080000_repair_merged_payment_verification.sql','utf8'));
     const verification = await db.exec(readFileSync('scripts/verify-payment-installation.sql','utf8'));
     assert.equal(verification.length,1,'SQL Editor must receive a single result table');
     const installation = new Map(verification[0].rows.map(check => [check.check_name,check.result]));

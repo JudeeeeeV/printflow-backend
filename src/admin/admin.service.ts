@@ -2,6 +2,8 @@ import {
   Injectable,
   UnauthorizedException,
   BadRequestException,
+  NotFoundException,
+  ConflictException,
   InternalServerErrorException,
 } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
@@ -12,6 +14,8 @@ import { JwtService } from '@nestjs/jwt';
 import { DaemonDevicesService } from '../daemon-devices/daemon-devices.service';
 import { TotpEncryptionService } from './totp-encryption.service';
 import { createHash, randomUUID } from 'node:crypto';
+import { PrintableDocumentService } from '../orders/printable-document.service';
+import { validateStoredOrderDocument } from '../orders/stored-order-document';
 import { applyOrderDecision } from '../orders/payment-workflow';
 
 @Injectable()
@@ -21,6 +25,7 @@ export class AdminService {
     private jwtService: JwtService,
     private daemonDevicesService: DaemonDevicesService,
     private totpEncryption: TotpEncryptionService,
+    private printableDocuments: PrintableDocumentService,
   ) {}
 
   getDaemonDevices() {
@@ -331,6 +336,16 @@ export class AdminService {
     receiptId: string,
     confirmed?: boolean,
   ) {
+    const supabase = this.supabaseService.getAdminClient();
+    const { data: owned, error } = await supabase.from('orders')
+      .select('id, state, shop_id').eq('id', orderId).single();
+    if (error || !owned) throw new NotFoundException('Order not found.');
+    if (!['CANCELLED', 'REJECTED', 'EXPIRED', 'COMPLETED'].includes(owned.state)) {
+      const { data: shop, error: shopError } = await supabase.from('shops')
+        .select('id').eq('id', owned.shop_id).eq('verification_status', 'VERIFIED').single();
+      if (shopError || !shop) throw new ConflictException('The shop must be verified before authorizing production.');
+      await validateStoredOrderDocument(this.supabaseService, this.printableDocuments, orderId);
+    }
     const order = await applyOrderDecision(
       this.supabaseService,
       orderId,
