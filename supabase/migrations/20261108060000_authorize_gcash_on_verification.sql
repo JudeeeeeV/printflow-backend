@@ -209,7 +209,7 @@ begin
     values (o.id, o.shop_id, 'HANDED_OVER', o.output_confirmed_attempt_id, p_actor);
   end if;
   return to_jsonb(o);
-end $;
+end $$;
 
 alter function public.apply_order_decision(uuid, uuid, text, text, jsonb)
   set lock_timeout = '3s';
