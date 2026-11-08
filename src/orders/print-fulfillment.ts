@@ -210,6 +210,8 @@ const CODE_ERRORS: Record<string, () => HttpException> = {
     ),
   PAYMENT_NOT_SETTLED: () =>
     new ConflictException('Payment must be recorded before handover.'),
+  PAYMENT_NOT_ELIGIBLE: () =>
+    new ConflictException('This order is not accepted or its payment is not eligible for printing. Refresh the order.'),
 };
 
 export function fulfillmentError(code: unknown): HttpException {

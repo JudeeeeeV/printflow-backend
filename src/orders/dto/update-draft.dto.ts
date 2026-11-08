@@ -1,5 +1,6 @@
 import {
   IsIn,
+  IsOptional,
   IsInt,
   IsNotEmpty,
   IsString,
@@ -11,6 +12,10 @@ import {
 } from 'class-validator';
 
 export class UpdateDraftDto {
+  @IsOptional()
+  @IsIn(['GCASH', 'CASH_ON_PICKUP'])
+  paymentMethod?: 'GCASH' | 'CASH_ON_PICKUP';
+
   @IsUUID('all')
   shopId: string;
 

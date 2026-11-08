@@ -19,6 +19,12 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateDraftDto } from './dto/update-draft.dto';
 import { VerifyPaymentDto } from './dto/verify-payment.dto';
 import { UpdateOrderStateDto } from './dto/update-order-state.dto';
+import {
+  DraftPaymentDto,
+  OrderDecisionDto,
+  PaymentDisputeDto,
+} from './dto/order-decision.dto';
+import { UploadReceiptDto } from './dto/upload-receipt.dto';
 import { SupabaseAuthGuard } from '../iam/guards/supabase-auth.guard';
 import { RolesGuard } from '../iam/guards/roles.guard';
 import { Roles } from '../iam/decorators/roles.decorator';
@@ -32,6 +38,8 @@ import {
 } from '../common/upload-security';
 import { Throttle } from '@nestjs/throttler';
 
+type OrderRequest = Request & { user: { id: string } };
+
 @Controller('orders')
 @UseGuards(SupabaseAuthGuard, RolesGuard)
 export class OrdersController {
@@ -40,13 +48,13 @@ export class OrdersController {
   @Get()
   @Roles('STUDENT')
   async getUserOrders(
-    @Req() req: Request,
+    @Req() req: OrderRequest,
     @Query('sortByDate') sortByDate?: 'asc' | 'desc',
     @Query('status') status?: string,
     @Query('page') page: string = '1',
     @Query('limit') limit: string = '10',
   ) {
-    const userId = (req as any).user.id;
+    const userId = req.user.id;
     return this.ordersService.getUserOrders(
       userId,
       sortByDate,
@@ -58,19 +66,19 @@ export class OrdersController {
 
   @Get('shop')
   @Roles('CLERK', 'MANAGER')
-  async getShopOrders(@Req() req: Request) {
-    const shopId = (req as any).user.id;
+  async getShopOrders(@Req() req: OrderRequest) {
+    const shopId = req.user.id;
     return this.ordersService.getShopOrders(shopId);
   }
 
   @Get('drafts')
   @Roles('STUDENT')
   async getDrafts(
-    @Req() req: Request,
+    @Req() req: OrderRequest,
     @Query('page') page: string = '1',
     @Query('limit') limit: string = '10',
   ) {
-    const userId = (req as any).user.id;
+    const userId = req.user.id;
     return this.ordersService.getDrafts(
       userId,
       parseInt(page, 10),
@@ -80,8 +88,8 @@ export class OrdersController {
 
   @Get(':id')
   @Roles('STUDENT')
-  async getOrder(@Param('id') orderId: string, @Req() req: Request) {
-    const userId = (req as any).user.id;
+  async getOrder(@Param('id') orderId: string, @Req() req: OrderRequest) {
+    const userId = req.user.id;
     return this.ordersService.getOrder(userId, orderId);
   }
 
@@ -97,10 +105,9 @@ export class OrdersController {
   async createOrder(
     @Body() createOrderDto: CreateOrderDto,
     @UploadedFile() file: Express.Multer.File,
-    @Req() req: Request,
+    @Req() req: OrderRequest,
   ) {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment,@typescript-eslint/no-unsafe-member-access
-    const userId = (req as any).user.id;
+    const userId = req.user.id;
     if (!file) {
       throw new BadRequestException('Asset file is required');
     }
@@ -110,9 +117,13 @@ export class OrdersController {
 
   @Patch(':id/submit')
   @Roles('STUDENT')
-  async submitDraft(@Param('id') draftId: string, @Req() req: Request) {
-    const userId = (req as any).user.id;
-    return this.ordersService.submitDraft(userId, draftId);
+  async submitDraft(
+    @Param('id') draftId: string,
+    @Req() req: OrderRequest,
+    @Body() body: DraftPaymentDto,
+  ) {
+    const userId = req.user.id;
+    return this.ordersService.submitDraft(userId, draftId, body?.paymentMethod);
   }
 
   @Patch(':id/update-draft')
@@ -120,16 +131,16 @@ export class OrdersController {
   async updateDraft(
     @Param('id') draftId: string,
     @Body() body: UpdateDraftDto,
-    @Req() req: Request,
+    @Req() req: OrderRequest,
   ) {
-    const userId = (req as any).user.id;
+    const userId = req.user.id;
     return this.ordersService.updateDraft(userId, draftId, body);
   }
 
   @Delete(':id/draft')
   @Roles('STUDENT')
-  async deleteDraft(@Param('id') draftId: string, @Req() req: Request) {
-    const userId = (req as any).user.id;
+  async deleteDraft(@Param('id') draftId: string, @Req() req: OrderRequest) {
+    const userId = req.user.id;
     return this.ordersService.deleteDraft(userId, draftId);
   }
 
@@ -145,18 +156,18 @@ export class OrdersController {
   async uploadReceipt(
     @Param('id') orderId: string,
     @UploadedFile() receiptFile: Express.Multer.File,
-    @Body('referenceNumber') referenceNumber: string | undefined,
-    @Req() req: Request,
+    @Body() body: UploadReceiptDto,
+    @Req() req: OrderRequest,
   ) {
     if (!receiptFile) {
       throw new BadRequestException('Receipt image is required');
     }
-    const userId = (req as any).user.id;
+    const userId = req.user.id;
     return this.ordersService.submitPaymentReceipt(
       userId,
       orderId,
       receiptFile,
-      referenceNumber,
+      body.referenceNumber,
     );
   }
 
@@ -165,22 +176,38 @@ export class OrdersController {
   async verifyPayment(
     @Param('id') orderId: string,
     @Body() body: VerifyPaymentDto,
-    @Req() req: Request,
+    @Req() req: OrderRequest,
   ) {
-    const clerkId = (req as any).user.id;
+    const clerkId = req.user.id;
     return this.ordersService.verifyPayment(
       clerkId,
       orderId,
       body.action,
       body.reason,
+      body.receiptId,
+      body.confirmed,
     );
+  }
+
+  @Post(':id/decision')
+  @Roles('CLERK', 'MANAGER')
+  async decideOrder(
+    @Param('id') orderId: string,
+    @Body() body: OrderDecisionDto,
+    @Req() req: OrderRequest,
+  ) {
+    const shopId = req.user.id;
+    return this.ordersService.decideOrder(shopId, orderId, body.action, {
+      reason: body.reason,
+      reference: body.reference,
+      confirmed: body.confirmed,
+    });
   }
 
   @Delete(':id')
   @Roles('STUDENT')
-  async cancelOrder(@Param('id') orderId: string, @Req() req: Request) {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment,@typescript-eslint/no-unsafe-member-access
-    const userId = (req as any).user.id;
+  async cancelOrder(@Param('id') orderId: string, @Req() req: OrderRequest) {
+    const userId = req.user.id;
     return this.ordersService.cancelOrder(userId, orderId);
   }
 
@@ -188,16 +215,20 @@ export class OrdersController {
   @Roles('STUDENT')
   async disputePayment(
     @Param('id') orderId: string,
-    @Body('reason') reason: string,
-    @Req() req: Request,
+    @Body() body: PaymentDisputeDto,
+    @Req() req: OrderRequest,
   ) {
-    if (!reason || reason.trim().length === 0) {
+    if (!body.reason.trim()) {
       throw new BadRequestException(
         'A reason must be provided for the dispute.',
       );
     }
-    const userId = (req as any).user.id;
-    return this.ordersService.disputePayment(userId, orderId, reason);
+    const userId = req.user.id;
+    return this.ordersService.disputePayment(
+      userId,
+      orderId,
+      body.reason.trim(),
+    );
   }
 
   @Patch(':id/state')
@@ -205,7 +236,7 @@ export class OrdersController {
   async updateOrderState(
     @Param('id') orderId: string,
     @Body() body: UpdateOrderStateDto,
-    @Req() req: Request,
+    @Req() req: OrderRequest,
   ) {
     const shopId = (req as any).user.id;
     return this.ordersService.updateOrderState(shopId, orderId, body.state, {

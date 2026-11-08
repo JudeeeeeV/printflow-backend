@@ -1,7 +1,9 @@
-import { IsUrl, IsNotEmpty } from 'class-validator';
+import { IsString, IsNotEmpty, Matches, MaxLength } from 'class-validator';
 
 export class UploadReceiptDto {
-  @IsUrl({}, { message: 'Receipt URL must be a valid URL' })
+  @IsString()
   @IsNotEmpty()
-  receiptUrl: string;
+  @Matches(/\S/, { message: 'A payment reference is required' })
+  @MaxLength(120)
+  referenceNumber: string;
 }
