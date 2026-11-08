@@ -1,4 +1,8 @@
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+} from '@nestjs/common';
 import { SupabaseService } from '../../supabase/supabase.service';
 import {
   ATTEMPT_COLUMNS,
@@ -39,15 +43,29 @@ export interface AgentEventInput {
 /** Durable print attempts. Every state transition runs in a database function. */
 @Injectable()
 export class PrintJobsRepository {
+  private readonly logger = new Logger(PrintJobsRepository.name);
+
   constructor(private readonly supabaseService: SupabaseService) {}
 
   private async rpc<T = RpcResult>(
     name: string,
     args: Record<string, unknown>,
   ): Promise<T> {
-    const response: { data: unknown; error: unknown } =
-      await this.supabaseService.getAdminClient().rpc(name, args);
+    const response: {
+      data: unknown;
+      error: {
+        code?: string;
+        message?: string;
+        details?: string;
+        hint?: string;
+      } | null;
+    } = await this.supabaseService.getAdminClient().rpc(name, args);
     if (response.error) {
+      // Server log only: the client receives a generic message.
+      const { code, message, details, hint } = response.error;
+      this.logger.error(
+        `${name} failed [${code ?? 'unknown'}]: ${message ?? 'no message'}${details ? ` | details: ${details}` : ''}${hint ? ` | hint: ${hint}` : ''}`,
+      );
       throw new InternalServerErrorException(
         'The print record could not be saved. Try again.',
       );

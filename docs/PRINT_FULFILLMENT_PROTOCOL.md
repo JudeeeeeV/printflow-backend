@@ -150,6 +150,8 @@ only); legacy `QUEUED`/`DOWNLOADING`/`SENT_TO_SPOOLER`/`FAILED` → `OUTCOME_UNK
 Each original value is kept in `legacy_status`. The latest attempt of an active
 order stays open for operator reconciliation; historical completed orders are untouched.
 
+`supabase/migrations/20261108010000_print_attempt_revision_ref.sql` must follow it: attempts keep their revision identity in `print_jobs.revision_ref`, because some databases already have `print_jobs.revision_id` as a `uuid` foreign key to `order_revisions`.
+
 Order: database → backend → frontend → agent. The migration keeps inserts from an
 older backend working (defaults and an attempt-number trigger). Do not re-run the
 older `20260924020000_print_jobs.sql` after this migration: it recreates the

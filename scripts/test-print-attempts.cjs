@@ -7,6 +7,8 @@ const { PGlite } = require('@electric-sql/pglite');
 const LEGACY = 'supabase/migrations/20260924020000_print_jobs.sql';
 const MIGRATION =
   'supabase/migrations/20261108000000_print_attempts_and_fulfillment.sql';
+const REVISION_REF =
+  'supabase/migrations/20261108010000_print_attempt_revision_ref.sql';
 const CHECKS = {
   document: true,
   revision: true,
@@ -17,7 +19,9 @@ const CHECKS = {
   copies: true,
 };
 
-async function main() {
+// existingRevisionColumn reproduces installations where print_jobs.revision_id
+// is already a uuid foreign key to order_revisions.
+async function main(existingRevisionColumn) {
   const db = new PGlite();
   const shopId = randomUUID();
   const otherShop = randomUUID();
@@ -109,6 +113,16 @@ async function main() {
       insert into public.shops values ('${shopId}'), ('${otherShop}');
     `);
     await db.exec(readFileSync(LEGACY, 'utf8'));
+    if (existingRevisionColumn) {
+      await db.exec(`
+        create table public.order_revisions (id uuid primary key);
+        alter table public.print_jobs
+          add column revision_id uuid references public.order_revisions(id),
+          add column settings_snapshot jsonb,
+          add column batch_id uuid,
+          add column requested_by uuid;
+      `);
+    }
 
     // Legacy fixtures recorded by the old backend.
     const legacyPrinted = await order('PRINTED');
@@ -126,6 +140,38 @@ async function main() {
     const migration = readFileSync(MIGRATION, 'utf8');
     await db.exec(migration);
     await db.exec(migration);
+
+    const beforeCorrection = await order();
+    let carriedOver = null;
+    if (existingRevisionColumn) {
+      await assert.rejects(
+        () => create(beforeCorrection),
+        /uuid <> text/,
+        'Reproduces the failure the corrective migration fixes',
+      );
+    } else {
+      carriedOver = (await create(beforeCorrection)).attempt.attempt_id;
+    }
+
+    const revisionRef = readFileSync(REVISION_REF, 'utf8');
+    await db.exec(revisionRef);
+    await db.exec(revisionRef);
+
+    if (existingRevisionColumn) {
+      const stored = (await create(beforeCorrection)).attempt;
+      assert.equal(stored.revision_ref, 'user/order/source.pdf');
+      assert.equal(stored.revision_id, null, 'The revision foreign key is left alone');
+      assert.equal(
+        (await create(await order(), { kind: 'RETRY', previous: stored.attempt_id })).code,
+        'ATTEMPT_NOT_CURRENT',
+      );
+    } else {
+      assert.equal(
+        (await attemptRow(carriedOver)).revision_ref,
+        'user/order/source.pdf',
+        'Text revisions are carried over',
+      );
+    }
 
     const legacy = (
       await db.query(
@@ -520,7 +566,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+main(true)
+  .then(() => main(false))
+  .catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });

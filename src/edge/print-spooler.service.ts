@@ -328,7 +328,7 @@ export class PrintSpoolerService {
     previous: PrintAttemptRow | null,
   ): Promise<Dispatch> {
     const revisionId = this.revisionOf(order);
-    if (previous?.revision_id && previous.revision_id !== revisionId)
+    if (previous?.revision_ref && previous.revision_ref !== revisionId)
       throw fulfillmentError('REVISION_CHANGED');
     const settings = previous?.print_settings ?? this.settingsOf(order);
     if (

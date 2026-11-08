@@ -362,7 +362,7 @@ export class EdgeDaemonGateway
     return {
       attemptId: attempt.attempt_id,
       orderId: attempt.order_id,
-      revisionId: attempt.revision_id,
+      revisionId: attempt.revision_ref,
       deviceId: attempt.device_id,
       printerName: attempt.printer_name,
       settings: {

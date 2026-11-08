@@ -23,7 +23,7 @@ const attemptRow = (overrides: Record<string, unknown> = {}) => ({
   printable_path: 'print-ready/file.pdf',
   printable_sha256: 'a'.repeat(64),
   printable_size: 10,
-  revision_id: 'source.pdf',
+  revision_ref: 'source.pdf',
   resolved_at: null,
   created_at: new Date().toISOString(),
   updated_at: new Date().toISOString(),

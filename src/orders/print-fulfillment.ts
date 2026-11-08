@@ -59,7 +59,7 @@ export interface PrintAttemptRow {
   previous_attempt_id: string | null;
   superseded_by_attempt_id: string | null;
   batch_request_id: string | null;
-  revision_id: string | null;
+  revision_ref: string | null;
   device_id: string | null;
   printer_name: string | null;
   print_settings: Record<string, unknown> | null;
@@ -84,7 +84,7 @@ export interface PrintAttemptRow {
 }
 
 export const ATTEMPT_COLUMNS =
-  'attempt_id, order_id, shop_id, status, attempt_number, attempt_kind, execution_mode, previous_attempt_id, superseded_by_attempt_id, batch_request_id, revision_id, device_id, printer_name, print_settings, printable_path, printable_sha256, printable_size, failure_phase, error_code, error_message, last_event_sequence, reason, authorized_at, received_at, submitted_at, agent_seen_at, resolved_at, resolution, created_at, updated_at, is_legacy, legacy_status';
+  'attempt_id, order_id, shop_id, status, attempt_number, attempt_kind, execution_mode, previous_attempt_id, superseded_by_attempt_id, batch_request_id, revision_ref, device_id, printer_name, print_settings, printable_path, printable_sha256, printable_size, failure_phase, error_code, error_message, last_event_sequence, reason, authorized_at, received_at, submitted_at, agent_seen_at, resolved_at, resolution, created_at, updated_at, is_legacy, legacy_status';
 
 export function isStale(attempt: PrintAttemptRow, now = Date.now()) {
   if (attempt.resolved_at || !IN_FLIGHT_STATUSES.includes(attempt.status))
@@ -113,7 +113,7 @@ export function presentAttempt(attempt: PrintAttemptRow, now = Date.now()) {
     printerName: attempt.printer_name,
     previousAttemptId: attempt.previous_attempt_id,
     supersededByAttemptId: attempt.superseded_by_attempt_id,
-    revisionId: attempt.revision_id,
+    revisionId: attempt.revision_ref,
     failurePhase: attempt.failure_phase,
     errorCode: attempt.error_code,
     errorMessage: attempt.error_message,

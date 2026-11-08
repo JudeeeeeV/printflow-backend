@@ -31,7 +31,7 @@ function attempt(orderId: string, overrides: Record<string, unknown> = {}) {
     printable_path: `print-ready/${orderId}.pdf`,
     printable_sha256: 'a'.repeat(64),
     printable_size: 100,
-    revision_id: 'document.pdf',
+    revision_ref: 'document.pdf',
     resolved_at: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -433,7 +433,7 @@ describe('PrintSpoolerService manual production and recovery', () => {
     f.jobs.findAttempt.mockResolvedValue(
       attempt('order-1', {
         status: 'FAILED_PRE_SUBMISSION',
-        revision_id: 'older.pdf',
+        revision_ref: 'older.pdf',
       }),
     );
     await expect(
