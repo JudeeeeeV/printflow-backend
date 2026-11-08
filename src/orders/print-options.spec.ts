@@ -1,4 +1,10 @@
-import { BadRequestException, ValidationPipe } from '@nestjs/common';
+import {
+  BadRequestException,
+  ServiceUnavailableException,
+  ValidationPipe,
+} from '@nestjs/common';
+import { DocumentUploadException } from '../common/document-upload-error';
+import { MAX_DOCUMENT_BYTES } from '../common/upload-security';
 import { PDFDocument } from 'pdf-lib';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateDraftDto } from './dto/update-draft.dto';
@@ -104,6 +110,7 @@ async function fixture() {
     assetBuffer = buffer;
     return Promise.resolve({ error: null });
   });
+  const writes: string[] = [];
   const queries: Array<{ table: string; filters: Array<[string, unknown]> }> =
     [];
   const from = (table: string) => {
@@ -118,10 +125,12 @@ async function fixture() {
       limit: jest.fn(() => query),
       order: jest.fn(() => query),
       insert: jest.fn((value: Record<string, unknown>) => {
+        writes.push(table);
         if (table === 'orders') Object.assign(row, value);
         return query;
       }),
       update: jest.fn((value: Record<string, unknown>) => {
+        writes.push(table);
         Object.assign(row, value);
         return query;
       }),
@@ -180,6 +189,9 @@ async function fixture() {
     service: new OrdersService(supabase, documents),
     printAssets: new PrintAssetService(supabase, documents),
     row,
+    documents,
+    asset,
+    writes,
     file,
     upload,
     storage,
@@ -279,5 +291,109 @@ describe('orientation and copies through orders and drafts', () => {
     delete f.row.copies;
     await f.service.submitDraft('student', 'order');
     expect(f.row.total).toBe(24);
+  });
+});
+
+describe('document preparation persistence safety', () => {
+  it.each([
+    ['unsupported', 'text/html', Buffer.from('html'), 'UNSUPPORTED_FILE'],
+    ['empty', 'application/pdf', Buffer.alloc(0), 'EMPTY_FILE'],
+    [
+      'oversized',
+      'application/pdf',
+      Buffer.alloc(MAX_DOCUMENT_BYTES + 1),
+      'FILE_TOO_LARGE',
+    ],
+    [
+      'signature mismatch',
+      'application/pdf',
+      Buffer.from('not PDF'),
+      'UNREADABLE_FILE',
+    ],
+    [
+      'broken PDF',
+      'application/pdf',
+      Buffer.from('%PDF-not readable'),
+      'UNREADABLE_FILE',
+    ],
+  ])(
+    'does not persist an order or asset for %s',
+    async (_label, mimetype, buffer, code) => {
+      const f = await fixture();
+      const error = await f.service
+        .createOrder('student', options, { ...f.file, mimetype, buffer })
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(DocumentUploadException);
+      expect((error as DocumentUploadException).getResponse()).toMatchObject({
+        code,
+      });
+      expect(f.writes).toEqual([]);
+      expect(f.upload).not.toHaveBeenCalled();
+    },
+  );
+  it('does not persist an order when conversion is unavailable', async () => {
+    const f = await fixture();
+    jest
+      .spyOn(f.documents, 'normalize')
+      .mockRejectedValueOnce(new ServiceUnavailableException('private'));
+    await expect(
+      f.service.createOrder('student', options, f.file),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'CONVERSION_UNAVAILABLE',
+      }) as unknown,
+    });
+    expect(f.writes).toEqual([]);
+    expect(f.upload).not.toHaveBeenCalled();
+  });
+  it('reports uncertainty when storage fails after order creation', async () => {
+    const f = await fixture();
+    f.upload.mockRejectedValueOnce(new Error('private storage path'));
+    await expect(
+      f.service.createOrder('student', options, f.file),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'UPLOAD_FAILED',
+        nextStep: expect.stringContaining('may be incomplete') as unknown,
+      }) as unknown,
+    });
+    expect(f.writes).toEqual(['orders']);
+  });
+  it.each(['missing', 'wrong type', 'download rejection', 'unreadable'])(
+    'blocks submission of a %s saved draft file',
+    async (kind) => {
+      const f = await fixture();
+      if (kind === 'missing') f.asset.file_url = '';
+      if (kind === 'wrong type') f.asset.file_type = 'DOCX';
+      if (kind === 'download rejection')
+        f.storage.download.mockRejectedValueOnce(new Error('private upstream'));
+      if (kind === 'unreadable')
+        jest
+          .spyOn(f.documents, 'getPdfPageCount')
+          .mockRejectedValueOnce(new BadRequestException('private parser'));
+      await expect(
+        f.service.submitDraft('student', 'order'),
+      ).rejects.toBeInstanceOf(DocumentUploadException);
+      expect(f.row.state).toBe('DRAFT');
+      expect(f.writes).toEqual([]);
+      expect(
+        f.queries.some(
+          (q) =>
+            q.table === 'orders' &&
+            q.filters.some(
+              ([key, value]) => key === 'client_id' && value === 'student',
+            ),
+        ),
+      ).toBe(true);
+    },
+  );
+  it('retains the submitted-order lock before reading its file', async () => {
+    const f = await fixture();
+    f.row.state = 'IN_PRODUCTION';
+    await expect(
+      f.service.submitDraft('student', 'order'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(f.storage.download).not.toHaveBeenCalled();
+    expect(f.writes).toEqual([]);
   });
 });

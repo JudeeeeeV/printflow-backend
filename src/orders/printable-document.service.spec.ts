@@ -1,4 +1,8 @@
-import { BadRequestException, PayloadTooLargeException } from '@nestjs/common';
+import {
+  BadRequestException,
+  PayloadTooLargeException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import JSZip from 'jszip';
 import {
   decodePDFRawStream,
@@ -9,6 +13,7 @@ import {
 } from 'pdf-lib';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { crc32 } from 'node:zlib';
 import sharp from 'sharp';
 import { DOCX_MIME_TYPE } from '../common/upload-security';
 import {
@@ -88,6 +93,21 @@ describe('PrintableDocumentService', () => {
     const original = Buffer.from(buffer);
     await expect(service.getPdfPageCount(buffer)).resolves.toBe(2);
     expect(buffer.equals(original)).toBe(true);
+  });
+
+  it('recognizes a PDF encryption marker using the installed parser', async () => {
+    const source = await PDFDocument.create();
+    source.addPage();
+    source.context.trailerInfo.Encrypt = source.context.obj({
+      Filter: 'Standard',
+    });
+    const buffer = Buffer.from(await source.save());
+    await expect(service.getPdfPageCount(buffer)).rejects.toThrow(
+      'Encrypted PDF files are not supported',
+    );
+    await expect(
+      service.normalize(upload('application/pdf', buffer), 'A4'),
+    ).rejects.toThrow('Encrypted PDF files are not supported');
   });
 
   it('rejects malformed and empty stored PDFs', async () => {
@@ -266,26 +286,82 @@ describe('PrintableDocumentService', () => {
     expect(portrait.getSize().height).toBeCloseTo(841.89, 1);
   });
 
-  it('converts a supported image into a one-page PDF', async () => {
+  it.each(['png', 'jpeg', 'webp'] as const)(
+    'converts a supported %s image into a one-page PDF',
+    async (format) => {
+      const image = await sharp({
+        create: {
+          width: 40,
+          height: 20,
+          channels: 3,
+          background: '#0f62fe',
+        },
+      })
+        .toFormat(format)
+        .toBuffer();
+
+      const result = await service.normalize(
+        upload(`image/${format}`, image),
+        'A4',
+      );
+      const pdf = await PDFDocument.load(result.buffer);
+
+      expect(result.buffer.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+      expect(result.pageCount).toBe(1);
+      expect(pdf.getPageCount()).toBe(1);
+      expect(pdf.getPage(0).getSize().width).toBeCloseTo(841.89, 1);
+      expect(pdf.getPage(0).getSize().height).toBeCloseTo(595.28, 1);
+    },
+  );
+
+  it('distinguishes excessive image dimensions from an unreadable file', async () => {
     const image = await sharp({
-      create: {
-        width: 40,
-        height: 20,
-        channels: 3,
-        background: '#0f62fe',
-      },
+      create: { width: 1, height: 1, channels: 3, background: '#ffffff' },
     })
-      .webp()
+      .png()
       .toBuffer();
+    // Alter only the synthetic PNG header; no large allocation is needed.
+    image.writeUInt32BE(100000, 16);
+    image.writeUInt32BE(100000, 20);
+    image.writeUInt32BE(crc32(image.subarray(12, 29)), 29);
+    await expect(
+      service.normalize(upload('image/png', image), 'A4'),
+    ).rejects.toThrow(/^Images may contain at most \d+ pixels$/);
+  });
 
-    const result = await service.normalize(upload('image/webp', image), 'A4');
-    const pdf = await PDFDocument.load(result.buffer);
+  it.each(['LibreOffice is not installed', 'LibreOffice conversion timed out'])(
+    'distinguishes converter unavailability: %s',
+    async (message) => {
+      const archive = new JSZip();
+      archive.file('[Content_Types].xml', '<Types/>');
+      archive.file('word/document.xml', '<document/>');
+      const buffer = await archive.generateAsync({ type: 'nodebuffer' });
+      const find = jest
+        .spyOn(
+          service as unknown as { findLibreOffice: () => Promise<string> },
+          'findLibreOffice',
+        )
+        .mockRejectedValueOnce(new Error(message));
+      try {
+        await expect(
+          service.normalize(upload(DOCX_MIME_TYPE, buffer), 'A4'),
+        ).rejects.toBeInstanceOf(ServiceUnavailableException);
+      } finally {
+        find.mockRestore();
+      }
+    },
+  );
 
-    expect(result.buffer.subarray(0, 5).toString('ascii')).toBe('%PDF-');
-    expect(result.pageCount).toBe(1);
-    expect(pdf.getPageCount()).toBe(1);
-    expect(pdf.getPage(0).getSize().width).toBeCloseTo(841.89, 1);
-    expect(pdf.getPage(0).getSize().height).toBeCloseTo(595.28, 1);
+  it('preserves detected DOCX protection rather than calling it corrupt', async () => {
+    const archive = new JSZip();
+    archive.file('[Content_Types].xml', '<Types/>');
+    archive.file('word/document.xml', '<document/>');
+    const buffer = await archive.generateAsync({ type: 'nodebuffer' });
+    const directory = buffer.indexOf(Buffer.from('504b0102', 'hex'));
+    buffer.writeUInt16LE(buffer.readUInt16LE(directory + 8) | 1, directory + 8);
+    await expect(
+      service.normalize(upload(DOCX_MIME_TYPE, buffer), 'A4'),
+    ).rejects.toThrow('Encrypted DOCX files are not supported');
   });
 
   it('rejects a ZIP that is not a DOCX package', async () => {
