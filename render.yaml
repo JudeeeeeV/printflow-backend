@@ -36,7 +36,7 @@ services:
       - key: ENABLE_AI_PERMIT_REVIEW
         value: false
       - key: AGENT_WINDOWS_VERSION
-        value: 0.1.5
+        value: 0.2.0
       - key: AGENT_WINDOWS_DOWNLOAD_URL
         sync: false
       - key: AGENT_WINDOWS_STORAGE_PATH
