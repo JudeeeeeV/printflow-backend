@@ -251,8 +251,10 @@ describe('orientation and copies through orders and drafts', () => {
     const printed = await PDFDocument.load(f.upload.mock.calls[1][1]);
     for (const page of printed.getPages())
       expect(page.getSize()).toEqual({ width: 595.28, height: 841.89 });
-    expect(f.upload.mock.calls[1][0]).toBe(
-      'print-ready/shop/order-A4-PORTRAIT.pdf',
+    expect(f.upload.mock.calls[1][0]).toEqual(
+      expect.stringMatching(
+        new RegExp(`^print-ready/shop/order-A4-PORTRAIT-[a-f0-9]{16}\\.pdf$`),
+      ),
     );
     expect(
       f.queries

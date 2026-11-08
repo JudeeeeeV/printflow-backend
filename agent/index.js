@@ -3,11 +3,25 @@ const { AgentApiClient } = require('./api-client');
 const { runSetup } = require('./setup-server');
 const { PrinterService } = require('./printer-service');
 const { AgentSocketClient } = require('./socket-client');
-const { backendUrl, AGENT_VERSION } = require('./config');
+const { AttemptJournal } = require('./attempt-journal');
+const { backendUrl, AGENT_VERSION, journalDirectory } = require('./config');
 const logger = require('./logger');
 
 let client;
 let registrationRecovery;
+let journal;
+
+/** The journal must load before any command can be accepted. */
+function loadJournal() {
+  if (journal) return journal;
+  const loaded = new AttemptJournal(journalDirectory);
+  const { count, corrupt } = loaded.load();
+  if (corrupt.length)
+    logger.warn(`Set aside ${corrupt.length} unreadable print journal record(s)`);
+  logger.info(`Loaded ${count} print journal record(s)`);
+  journal = loaded;
+  return journal;
+}
 
 async function loadCredentialsOrReset() {
   try {
@@ -36,6 +50,7 @@ async function connectRegisteredAgent(url, apiClient, printerService) {
     credentials,
     printerService,
     () => recoverRegistration(url, apiClient, printerService, nextClient),
+    loadJournal(),
   );
   client = nextClient;
   await nextClient.start();

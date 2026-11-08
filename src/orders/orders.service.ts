@@ -22,6 +22,23 @@ import {
   type PrintOrientation,
 } from './printable-document.service';
 import { isShopOpenNow } from '../shops/shop-availability';
+import {
+  ATTEMPT_COLUMNS,
+  fulfillmentError,
+  fulfillmentStage,
+  OUTPUT_CHECKS,
+  presentAttempt,
+  type PrintAttemptRow,
+  type RpcResult,
+} from './print-fulfillment';
+
+/** States whose print attempts matter to operators and students. */
+const FULFILLMENT_STATES = new Set([
+  'IN_PRODUCTION',
+  'PRINTED',
+  'READY_FOR_PICKUP',
+  'COMPLETED',
+]);
 
 const SHOP_VISIBLE_ORDER_STATES = new Set([
   'OPEN_INQUIRY',
@@ -292,10 +309,13 @@ export class OrdersService {
 
     const totalItems = count || 0;
     const totalPages = Math.max(1, Math.ceil(totalItems / limit));
+    const staged = await this.withFulfillmentStages(
+      (data || []) as Array<{ id: string; state: string }>,
+    );
 
     return {
       data: await Promise.all(
-        (data || []).map((order) => this.signOrderStorageFields(order)),
+        staged.map((order) => this.signOrderStorageFields(order)),
       ),
       meta: {
         currentPage: page,
@@ -328,7 +348,7 @@ export class OrdersService {
     );
     const clientIds = [...new Set(orders.map((order) => order.client_id))];
     if (!clientIds.length) return [];
-    const [{ data: clients, error: clientsError }, assets, receipts] =
+    const [{ data: clients, error: clientsError }, assets, receipts, attempts] =
       await Promise.all([
         supabase
           .from('users')
@@ -350,6 +370,12 @@ export class OrdersService {
             ),
           ),
         ),
+        this.latestAttempts(
+          orders
+            .filter((order) => FULFILLMENT_STATES.has(order.state))
+            .map((order) => order.id),
+          shopId,
+        ),
       ]);
     if (clientsError) {
       throw new InternalServerErrorException('Failed to fetch client names.');
@@ -360,8 +386,14 @@ export class OrdersService {
         [client.first_name, client.last_name].filter(Boolean).join(' ').trim(),
       ]),
     );
+    const now = Date.now();
     return orders.map((order) => ({
       ...order,
+      // Persisted progress: reopening the dashboard does not depend on sockets.
+      current_attempt: attempts.latest.has(order.id)
+        ? presentAttempt(attempts.latest.get(order.id)!, now)
+        : null,
+      attempt_count: attempts.counts.get(order.id) || 0,
       client_name: names.get(order.client_id) || null,
       assets: (order.assets || []).map((asset: { file_url: string }) => ({
         ...asset,
@@ -398,7 +430,10 @@ export class OrdersService {
     if (error || !data) {
       throw new NotFoundException('Order not found');
     }
-    return this.signOrderStorageFields(data);
+    const [staged] = await this.withFulfillmentStages([
+      data as unknown as { id: string; state: string },
+    ]);
+    return this.signOrderStorageFields(staged);
   }
 
   async getDrafts(userId: string, page: number = 1, limit: number = 10) {
@@ -1056,51 +1091,103 @@ export class OrdersService {
     return { message: 'Order cancelled successfully' };
   }
 
+  /**
+   * Operator-controlled fulfillment. READY_FOR_PICKUP records an inspected
+   * output for the current attempt; COMPLETED records handover after output
+   * confirmation and payment. Printer callbacks never reach this path.
+   */
   async updateOrderState(
     shopId: string,
     orderId: string,
     newState: 'READY_FOR_PICKUP' | 'COMPLETED',
+    decision: {
+      expectedAttemptId?: string | null;
+      confirmed?: boolean;
+      checks?: Record<string, unknown>;
+      reconciliationReason?: string;
+    } = {},
   ) {
-    const supabase = this.supabaseService.getAdminClient();
     await this.requireVerifiedShop(shopId);
-
-    const { data: order, error: fetchError } = await supabase
-      .from('orders')
-      .select('state')
-      .eq('id', orderId)
-      .eq('shop_id', shopId)
-      .single();
-
-    if (fetchError || !order) {
-      throw new NotFoundException('Order not found or access denied.');
-    }
-
-    const transitions: Record<string, string[]> = {
-      IN_PRODUCTION: ['READY_FOR_PICKUP'],
-      PRINTED: ['READY_FOR_PICKUP'],
-      READY_FOR_PICKUP: ['COMPLETED'],
-    };
-    if (!transitions[order.state]?.includes(newState)) {
+    if (decision.confirmed !== true)
       throw new BadRequestException(
-        `Cannot transition an order from ${order.state} to ${newState}`,
+        'Explicit operator confirmation is required.',
       );
-    }
-
-    const { data: updatedOrder, error: updateError } = await supabase
-      .from('orders')
-      .update({ state: newState })
-      .eq('id', orderId)
-      .eq('shop_id', shopId)
-      .eq('state', order.state)
-      .select('id')
-      .maybeSingle();
-
-    if (updateError || !updatedOrder) {
+    const supabase = this.supabaseService.getAdminClient();
+    const response: { data: unknown; error: unknown } =
+      newState === 'READY_FOR_PICKUP'
+        ? await supabase.rpc('print_confirm_output', {
+            p_order_id: orderId,
+            p_shop_id: shopId,
+            p_expected_attempt_id: decision.expectedAttemptId ?? null,
+            p_actor_id: shopId,
+            p_reason: decision.reconciliationReason?.trim() || null,
+            p_checks: Object.fromEntries(
+              OUTPUT_CHECKS.map((name) => [
+                name,
+                decision.checks?.[name] === true,
+              ]),
+            ),
+          })
+        : await supabase.rpc('print_record_handover', {
+            p_order_id: orderId,
+            p_shop_id: shopId,
+            p_expected_attempt_id: decision.expectedAttemptId ?? null,
+            p_actor_id: shopId,
+          });
+    if (response.error)
       throw new InternalServerErrorException(
-        'Failed to update order state because it changed concurrently',
+        'The fulfillment decision could not be recorded. Try again.',
       );
-    }
+    const result = response.data as RpcResult | null;
+    if (!result?.ok) throw fulfillmentError(result?.code);
+    return {
+      message:
+        newState === 'READY_FOR_PICKUP'
+          ? 'Output confirmed. The order is ready for pickup.'
+          : 'Handover recorded. The order is completed.',
+      state: newState,
+      duplicate: result.result === 'DUPLICATE',
+    };
+  }
 
-    return { message: 'Order state updated successfully', state: newState };
+  /** Latest attempt per order (open or most recent), or an empty map. */
+  private async latestAttempts(orderIds: string[], shopId?: string) {
+    const latest = new Map<string, PrintAttemptRow>();
+    const counts = new Map<string, number>();
+    if (orderIds.length === 0) return { latest, counts };
+    let query = this.supabaseService
+      .getAdminClient()
+      .from('print_jobs')
+      .select(ATTEMPT_COLUMNS)
+      .in('order_id', orderIds);
+    if (shopId) query = query.eq('shop_id', shopId);
+    const { data, error } = await query.order('attempt_number', {
+      ascending: false,
+    });
+    if (error) {
+      // Keep queues readable during a staged rollout; progress reads resume
+      // once the attempt migration is applied.
+      this.logger.warn(`Failed to load print attempts: ${error.message}`);
+      return { latest, counts };
+    }
+    for (const attempt of (data || []) as unknown as PrintAttemptRow[]) {
+      counts.set(attempt.order_id, (counts.get(attempt.order_id) || 0) + 1);
+      if (!latest.has(attempt.order_id)) latest.set(attempt.order_id, attempt);
+    }
+    return { latest, counts };
+  }
+
+  /** Student view: a coarse stage, never device errors or file paths. */
+  private async withFulfillmentStages<T extends { id: string; state: string }>(
+    orders: T[],
+  ) {
+    const ids = orders
+      .filter((order) => FULFILLMENT_STATES.has(order.state))
+      .map((order) => order.id);
+    const { latest } = await this.latestAttempts(ids);
+    return orders.map((order) => ({
+      ...order,
+      fulfillment_stage: fulfillmentStage(order.state, latest.get(order.id)),
+    }));
   }
 }

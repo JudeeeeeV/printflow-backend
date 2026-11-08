@@ -45,11 +45,20 @@ function backendUrl() {
   return parsed.toString().replace(/\/+$/, '');
 }
 
+/** Attempt-reporting protocol; the backend requires it for new dispatches. */
+const PROTOCOL_VERSION = 2;
+const AGENT_CAPABILITIES = ['attempt-reporting-v1'];
+
 module.exports = {
   AGENT_VERSION,
+  PROTOCOL_VERSION,
+  AGENT_CAPABILITIES,
   dataDirectory,
   configPath,
   credentialsPath: path.join(dataDirectory, 'credentials.dat'),
+  // Kept in application data, apart from credentials and outside the
+  // installation directory that upgrades replace.
+  journalDirectory: path.join(dataDirectory, 'journal'),
   logPath: path.join(dataDirectory, 'agent.log'),
   backendUrl,
 };
