@@ -11,7 +11,12 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { degrees, PDFDocument, type PDFEmbeddedPage } from 'pdf-lib';
+import {
+  degrees,
+  EncryptedPDFError,
+  PDFDocument,
+  type PDFEmbeddedPage,
+} from 'pdf-lib';
 import sharp from 'sharp';
 import { DOCX_MIME_TYPE } from '../common/upload-security';
 
@@ -100,6 +105,14 @@ export class PrintableDocumentService {
         );
       } catch (error) {
         if (error instanceof PayloadTooLargeException) throw error;
+        if (
+          error instanceof EncryptedPDFError ||
+          (error instanceof Error &&
+            error.message === new EncryptedPDFError().message)
+        )
+          throw new BadRequestException(
+            'Encrypted PDF files are not supported',
+          );
         throw new BadRequestException('The uploaded PDF is invalid');
       }
     });
@@ -120,6 +133,14 @@ export class PrintableDocumentService {
         return pageCount;
       } catch (error) {
         if (error instanceof PayloadTooLargeException) throw error;
+        if (
+          error instanceof EncryptedPDFError ||
+          (error instanceof Error &&
+            error.message === new EncryptedPDFError().message)
+        )
+          throw new BadRequestException(
+            'Encrypted PDF files are not supported',
+          );
         throw new BadRequestException('The stored PDF is invalid');
       }
     });
@@ -207,6 +228,12 @@ export class PrintableDocumentService {
       return { buffer: outputBuffer, pageCount };
     } catch (error) {
       if (error instanceof PayloadTooLargeException) throw error;
+      if (
+        error instanceof EncryptedPDFError ||
+        (error instanceof Error &&
+          error.message === new EncryptedPDFError().message)
+      )
+        throw new BadRequestException('Encrypted PDF files are not supported');
       throw new BadRequestException(errorMessage);
     }
   }
@@ -249,6 +276,13 @@ export class PrintableDocumentService {
       return { buffer: outputBuffer, pageCount: 1 };
     } catch (error) {
       if (error instanceof PayloadTooLargeException) throw error;
+      if (
+        error instanceof Error &&
+        error.message === 'Input image exceeds pixel limit'
+      )
+        throw new PayloadTooLargeException(
+          `Images may contain at most ${MAX_IMAGE_PIXELS} pixels`,
+        );
       throw new BadRequestException('The uploaded image is invalid');
     }
   }
@@ -294,6 +328,19 @@ export class PrintableDocumentService {
       ) {
         throw error;
       }
+      if (
+        error instanceof ServiceUnavailableException ||
+        (error instanceof Error &&
+          (error.message === 'LibreOffice is not installed' ||
+            error.message === 'LibreOffice conversion timed out' ||
+            ['ENOENT', 'EACCES', 'ENOEXEC'].includes(
+              String((error as NodeJS.ErrnoException).code),
+            )))
+      ) {
+        throw new ServiceUnavailableException(
+          'Document conversion is temporarily unavailable.',
+        );
+      }
       throw new BadRequestException(
         'The DOCX file could not be converted to a printable PDF',
       );
@@ -315,6 +362,11 @@ export class PrintableDocumentService {
       }
     } catch (error) {
       if (error instanceof PayloadTooLargeException) throw error;
+      if (
+        error instanceof BadRequestException &&
+        error.message === 'Encrypted DOCX files are not supported'
+      )
+        throw error;
       throw new BadRequestException('The uploaded DOCX file is invalid');
     }
   }
@@ -379,12 +431,14 @@ export class PrintableDocumentService {
         );
       }
       if (expandedSize > MAX_DOCX_ENTRY_BYTES) {
-        throw new PayloadTooLargeException('A DOCX entry is too large');
+        throw new PayloadTooLargeException(
+          `DOCX entries may expand to at most ${MAX_DOCX_ENTRY_BYTES} bytes`,
+        );
       }
       totalExpandedBytes += expandedSize;
       if (totalExpandedBytes > MAX_DOCX_EXPANDED_BYTES) {
         throw new PayloadTooLargeException(
-          'The expanded DOCX file is too large',
+          `DOCX files may expand to at most ${MAX_DOCX_EXPANDED_BYTES} bytes`,
         );
       }
       if (compressedSize > 0 && expandedSize / compressedSize > 500) {
@@ -462,7 +516,9 @@ export class PrintableDocumentService {
 
   private assertNormalizedSize(buffer: Buffer): void {
     if (buffer.length > MAX_NORMALIZED_PDF_BYTES) {
-      throw new PayloadTooLargeException('The normalized PDF is too large');
+      throw new PayloadTooLargeException(
+        `Normalized PDFs may contain at most ${MAX_NORMALIZED_PDF_BYTES} bytes`,
+      );
     }
   }
 

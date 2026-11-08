@@ -5,6 +5,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { GlobalExceptionFilter } from './global-exception.filter';
+import { DocumentUploadException } from './document-upload-error';
 import { OrderDecisionUnavailableException } from './order-decision-unavailable.exception';
 
 describe('GlobalExceptionFilter server errors', () => {
@@ -40,6 +41,20 @@ describe('GlobalExceptionFilter server errors', () => {
       requestId: 'request',
     });
   });
+
+  it.each(['UPLOAD_FAILED', 'CONVERSION_UNAVAILABLE'] as const)(
+    'exposes only safe %s recovery guidance',
+    (code) => {
+      const exception = new DocumentUploadException(code);
+      const response = respond(exception);
+      expect(response.status).toHaveBeenCalledWith(503);
+      expect(response.json).toHaveBeenCalledWith({
+        ...(exception.getResponse() as object),
+        statusCode: 503,
+        requestId: 'request',
+      });
+    },
+  );
 
   it.each([
     new InternalServerErrorException('Private implementation detail'),

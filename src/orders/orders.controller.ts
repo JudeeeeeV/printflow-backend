@@ -31,12 +31,12 @@ import { Roles } from '../iam/decorators/roles.decorator';
 import type { Request } from 'express';
 import {
   IMAGE_MIME_TYPES,
-  MAX_DOCUMENT_BYTES,
   MAX_IMAGE_BYTES,
-  PRINTABLE_DOCUMENT_MIME_TYPES,
   secureUploadOptions,
 } from '../common/upload-security';
 import { Throttle } from '@nestjs/throttler';
+import { DocumentUploadInterceptor } from '../common/document-upload.interceptor';
+import { DocumentUploadException } from '../common/document-upload-error';
 
 type OrderRequest = Request & { user: { id: string } };
 
@@ -96,12 +96,7 @@ export class OrdersController {
   @Post()
   @Roles('STUDENT')
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  @UseInterceptors(
-    FileInterceptor(
-      'file',
-      secureUploadOptions(PRINTABLE_DOCUMENT_MIME_TYPES, MAX_DOCUMENT_BYTES),
-    ),
-  )
+  @UseInterceptors(DocumentUploadInterceptor)
   async createOrder(
     @Body() createOrderDto: CreateOrderDto,
     @UploadedFile() file: Express.Multer.File,
@@ -109,7 +104,7 @@ export class OrdersController {
   ) {
     const userId = req.user.id;
     if (!file) {
-      throw new BadRequestException('Asset file is required');
+      throw new DocumentUploadException('EMPTY_FILE');
     }
     // createOrderDto will now optionally carry the { isDraft: true } flag from the frontend
     return this.ordersService.createOrder(userId, createOrderDto, file);

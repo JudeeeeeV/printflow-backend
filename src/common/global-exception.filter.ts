@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { OrderDecisionUnavailableException } from './order-decision-unavailable.exception';
+import { DocumentUploadException } from './document-upload-error';
 
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
@@ -32,11 +33,16 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         `${request.method} ${request.path} failed [requestId=${requestId}]: ${diagnostic}`,
       );
       response.status(status).json({
+        ...(exception instanceof DocumentUploadException
+          ? (exception.getResponse() as object)
+          : {}),
         statusCode: status,
         message:
-          exception instanceof OrderDecisionUnavailableException
-            ? exception.message
-            : 'An internal error occurred',
+          exception instanceof DocumentUploadException
+            ? (exception.getResponse() as { message: string }).message
+            : exception instanceof OrderDecisionUnavailableException
+              ? exception.message
+              : 'An internal error occurred',
         requestId,
       });
       return;

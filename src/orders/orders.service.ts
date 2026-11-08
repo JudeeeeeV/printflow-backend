@@ -14,6 +14,7 @@ import { UpdateDraftDto } from './dto/update-draft.dto';
 import {
   assertFileSignature,
   IMAGE_MIME_TYPES,
+  MAX_DOCUMENT_BYTES,
   PRINTABLE_DOCUMENT_MIME_TYPES,
   secureObjectName,
 } from '../common/upload-security';
@@ -21,6 +22,10 @@ import {
   PrintableDocumentService,
   type PrintOrientation,
 } from './printable-document.service';
+import {
+  DocumentUploadException,
+  documentUploadError,
+} from '../common/document-upload-error';
 import { validateStoredOrderDocument } from './stored-order-document';
 import { isShopOpenNow } from '../shops/shop-availability';
 import { applyOrderDecision, type PaymentOrder } from './payment-workflow';
@@ -170,32 +175,34 @@ export class OrdersService {
   }
 
   private async getAssetPageCount(orderId: string): Promise<number> {
-    const supabase = this.supabaseService.getAdminClient();
-    const { data: asset, error } = await supabase
-      .from('assets')
-      .select('file_url, file_type')
-      .eq('order_id', orderId)
-      .limit(1)
-      .single();
-    if (error || !asset) throw new BadRequestException('Draft asset not found');
-    if (asset.file_type !== 'PDF') return 1;
-
-    const path = this.supabaseService.storagePath(asset.file_url, 'assets');
-    if (!path) throw new BadRequestException('Draft asset path is invalid');
-    const { data: blob, error: downloadError } = await supabase.storage
-      .from('assets')
-      .download(path);
-    if (downloadError || !blob) {
-      throw new BadRequestException('Draft asset could not be validated');
+    let bytes: Buffer;
+    try {
+      const supabase = this.supabaseService.getAdminClient();
+      const { data: asset, error } = await supabase
+        .from('assets')
+        .select('file_url, file_type')
+        .eq('order_id', orderId)
+        .limit(1)
+        .single<{ file_url: string; file_type: string }>();
+      if (error || !asset || asset.file_type !== 'PDF')
+        throw new DocumentUploadException('DRAFT_FILE_UNAVAILABLE');
+      const path = this.supabaseService.storagePath(asset.file_url, 'assets');
+      if (!path) throw new DocumentUploadException('DRAFT_FILE_UNAVAILABLE');
+      const { data: blob, error: downloadError } = await supabase.storage
+        .from('assets')
+        .download(path);
+      if (downloadError || !blob)
+        throw new DocumentUploadException('DRAFT_FILE_UNAVAILABLE');
+      bytes = Buffer.from(await blob.arrayBuffer());
+    } catch {
+      throw new DocumentUploadException('DRAFT_FILE_UNAVAILABLE');
     }
     try {
       // The stored document was normalized during upload. Validate and count it
       // without rebuilding every page just to inspect an existing order.
-      return await this.printableDocuments.getPdfPageCount(
-        Buffer.from(await blob.arrayBuffer()),
-      );
-    } catch {
-      throw new BadRequestException('Draft PDF is invalid');
+      return await this.printableDocuments.getPdfPageCount(bytes);
+    } catch (error) {
+      throw documentUploadError(error);
     }
   }
 
@@ -738,7 +745,20 @@ export class OrdersService {
     file: Express.Multer.File,
   ) {
     const supabase = this.supabaseService.getAdminClient();
-    assertFileSignature(file, PRINTABLE_DOCUMENT_MIME_TYPES);
+    if (
+      !PRINTABLE_DOCUMENT_MIME_TYPES.includes(
+        file.mimetype as (typeof PRINTABLE_DOCUMENT_MIME_TYPES)[number],
+      )
+    )
+      throw new DocumentUploadException('UNSUPPORTED_FILE');
+    if (!file.buffer?.length) throw new DocumentUploadException('EMPTY_FILE');
+    if (file.buffer.length > MAX_DOCUMENT_BYTES)
+      throw new DocumentUploadException('FILE_TOO_LARGE');
+    try {
+      assertFileSignature(file, PRINTABLE_DOCUMENT_MIME_TYPES);
+    } catch (error) {
+      throw documentUploadError(error);
+    }
 
     // Evaluate the string sent by FormData
     const isDraftOrder = payload.isDraft === 'true';
@@ -763,11 +783,11 @@ export class OrdersService {
 
     const pricingMatrix = (shop as unknown as ShopPricingRow).pricing_matrix;
 
-    const printable = await this.printableDocuments.normalize(
-      file,
-      payload.paperSize,
-      payload.orientation,
-    );
+    const printable = await this.printableDocuments
+      .normalize(file, payload.paperSize, payload.orientation)
+      .catch((error: unknown) => {
+        throw documentUploadError(error);
+      });
     const pageCount = printable.pageCount;
 
     const calculatedTotal = this.calculatePrice(
@@ -808,47 +828,48 @@ export class OrdersService {
     }
 
     // 2. Store a normalized PDF so every printer agent receives one format.
-    await this.ensureAssetsBucket();
-    const originalFileName =
-      file.originalname.split(/[\\/]/).pop()?.replaceAll('\0', '').trim() ||
-      null;
-    const fileName = secureObjectName(
-      `${userId}/${order.id}`,
-      'application/pdf',
-    );
-    const { error: uploadError } = await supabase.storage
-      .from('assets')
-      .upload(fileName, printable.buffer, {
-        contentType: 'application/pdf',
-        metadata: originalFileName ? { originalFileName } : undefined,
+    try {
+      await this.ensureAssetsBucket();
+      const originalFileName =
+        file.originalname.split(/[\\/]/).pop()?.replaceAll('\0', '').trim() ||
+        null;
+      const fileName = secureObjectName(
+        `${userId}/${(order as { id: string }).id}`,
+        'application/pdf',
+      );
+      const { error: uploadError } = await supabase.storage
+        .from('assets')
+        .upload(fileName, printable.buffer, {
+          contentType: 'application/pdf',
+          metadata: originalFileName ? { originalFileName } : undefined,
+        });
+
+      if (uploadError) {
+        throw new DocumentUploadException('UPLOAD_FAILED');
+      }
+
+      // 3. Link the design asset to the newly created order
+      const assetBase = {
+        order_id: (order as { id: string }).id,
+        file_url: fileName,
+        dpi: 300, // Baseline required by application logic
+        file_type: 'PDF',
+      };
+      let { error: assetError } = await supabase.from('assets').insert({
+        ...assetBase,
+        original_filename: originalFileName,
       });
+      if (isMissingOriginalFilenameColumn(assetError)) {
+        ({ error: assetError } = await supabase
+          .from('assets')
+          .insert(assetBase));
+      }
 
-    if (uploadError) {
-      throw new InternalServerErrorException(
-        `Failed to upload asset: ${uploadError.message}`,
-      );
-    }
-
-    // 3. Link the design asset to the newly created order
-    const assetBase = {
-      order_id: (order as { id: string }).id,
-      file_url: fileName,
-      dpi: 300, // Baseline required by application logic
-      file_type: 'PDF',
-    };
-    let { error: assetError } = await supabase.from('assets').insert({
-      ...assetBase,
-      original_filename: originalFileName,
-    });
-    if (isMissingOriginalFilenameColumn(assetError)) {
-      ({ error: assetError } = await supabase.from('assets').insert(assetBase));
-    }
-
-    if (assetError) {
-      // Rollback logic could go here if needed
-      throw new InternalServerErrorException(
-        'Order created, but asset linkage failed: ' + assetError.message,
-      );
+      if (assetError) {
+        throw new DocumentUploadException('UPLOAD_FAILED');
+      }
+    } catch {
+      throw new DocumentUploadException('UPLOAD_FAILED');
     }
 
     return {
