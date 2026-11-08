@@ -50,8 +50,10 @@ export class AnalyticsService {
 
     const allOrders = orders || [];
 
-    // State classifications
-    const completedStates = ['READY_FOR_PICKUP', 'COMPLETED', 'PRINTED'];
+    // State classifications. Only a recorded handover completes an order;
+    // reprints are attempts on the same order, so they never add orders,
+    // pages or revenue.
+    const completedStates = ['COMPLETED'];
     const paidStates = [
       'IN_PRODUCTION',
       'READY_FOR_PICKUP',

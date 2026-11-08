@@ -1,7 +1,13 @@
 const { io } = require('socket.io-client');
-const { AGENT_VERSION } = require('./config');
+const {
+  AGENT_VERSION,
+  AGENT_CAPABILITIES,
+  PROTOCOL_VERSION,
+} = require('./config');
 const { JobProcessor } = require('./job-processor');
 const logger = require('./logger');
+
+const ACK_TIMEOUT_MS = 15_000;
 
 class AgentSocketClient {
   constructor(
@@ -10,6 +16,7 @@ class AgentSocketClient {
     credentials,
     printerService,
     onCredentialsRejected,
+    journal,
   ) {
     this.backendUrl = backendUrl;
     this.apiClient = apiClient;
@@ -21,9 +28,31 @@ class AgentSocketClient {
     this.reconnectAttempt = 0;
     this.lastPrinterSnapshot = '';
     this.timers = new Set();
-    this.jobProcessor = new JobProcessor(printerService, (status) => {
-      this.socket?.emit('job_status_update', status);
+    // Bound to this registration's device; another identity's journal
+    // records are never executed or reported.
+    this.jobProcessor = new JobProcessor({
+      printerService,
+      journal,
+      deviceId: credentials.deviceId,
+      logger,
+      transport: {
+        sendEvent: (event) => this.request('attempt_event', event, { ack: false, retry: true }),
+        authorize: (attemptId) =>
+          this.request('attempt_authorize', { attemptId }, { authorized: false, reason: 'UNAVAILABLE' }),
+      },
     });
+    this.jobProcessor.start();
+  }
+
+  /** Emits with an acknowledgement, or returns the fallback when offline. */
+  async request(name, payload, fallback) {
+    const socket = this.socket;
+    if (!socket?.connected) return fallback;
+    try {
+      return await socket.timeout(ACK_TIMEOUT_MS).emitWithAck(name, payload);
+    } catch {
+      return fallback;
+    }
   }
 
   async start() {
@@ -63,7 +92,12 @@ class AgentSocketClient {
     this.socket?.disconnect();
     const socket = io(`${this.backendUrl}/daemon`, {
       query: { shopId, role: 'daemon' },
-      auth: { token: accessToken, agentVersion: AGENT_VERSION },
+      auth: {
+        token: accessToken,
+        agentVersion: AGENT_VERSION,
+        protocolVersion: PROTOCOL_VERSION,
+        capabilities: AGENT_CAPABILITIES,
+      },
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1_000,
@@ -76,15 +110,24 @@ class AgentSocketClient {
       this.reconnectAttempt = 0;
       logger.info('Printer agent connected to PrintFlow');
       void this.scanAndReportPrinters(true);
+      void this.reconcile();
       this.setRepeating(
-        () => socket.emit('daemon_heartbeat', { agentVersion: AGENT_VERSION }),
+        () =>
+          socket.emit('daemon_heartbeat', {
+            agentVersion: AGENT_VERSION,
+            waitingAttemptIds: this.jobProcessor.waitingAttemptIds(),
+          }),
         25_000,
       );
       this.setRepeating(() => void this.scanAndReportPrinters(false), 3_000);
+      // Retry unacknowledged status reports (delivery only, never execution).
+      this.setRepeating(() => void this.jobProcessor.flush(), 30_000);
       this.setTimer(() => void this.connectWithFreshToken(), 12 * 60 * 1000);
     });
 
-    socket.on('batch_execute', (payload) => this.jobProcessor.enqueue(payload));
+    socket.on('print_attempts', (payload) => {
+      void this.jobProcessor.enqueue(payload);
+    });
     socket.on('agent_command', (command) => {
       if (command?.type === 'RESCAN_PRINTERS') {
         void this.scanAndReportPrinters(true);
@@ -98,6 +141,19 @@ class AgentSocketClient {
     socket.on('connect_error', (error) => {
       logger.warn(`Printer agent connection failed: ${error.message}`);
     });
+  }
+
+  /** Replays the outbox and drops work the backend superseded meanwhile. */
+  async reconcile() {
+    await this.jobProcessor.flush();
+    const attemptIds = this.jobProcessor.waitingAttemptIds();
+    if (attemptIds.length === 0) return;
+    const result = await this.request(
+      'attempt_reconcile',
+      { attemptIds },
+      { attempts: [] },
+    );
+    this.jobProcessor.reconcile(result?.attempts);
   }
 
   async scanAndReportPrinters(force) {

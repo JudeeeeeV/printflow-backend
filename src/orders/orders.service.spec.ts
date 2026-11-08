@@ -6,6 +6,7 @@ describe('OrdersService.getShopOrders client names', () => {
   function fixture(
     orders: Record<string, unknown>[],
     profileError: unknown = null,
+    attempts: Record<string, unknown>[] = [],
   ) {
     const shopQuery = {
       select: jest.fn().mockReturnThis(),
@@ -32,10 +33,17 @@ describe('OrdersService.getShopOrders client names', () => {
         error: profileError,
       }),
     };
+    const attemptQuery = {
+      select: jest.fn().mockReturnThis(),
+      in: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockResolvedValue({ data: attempts, error: null }),
+    };
     const from = jest.fn((table: string) => {
       if (table === 'shops') return shopQuery;
       if (table === 'orders') return orderQuery;
       if (table === 'users') return profileQuery;
+      if (table === 'print_jobs') return attemptQuery;
       throw new Error(`Unexpected table: ${table}`);
     });
     const sign = jest
@@ -48,8 +56,62 @@ describe('OrdersService.getShopOrders client names', () => {
       } as unknown as SupabaseService,
       {} as PrintableDocumentService,
     );
-    return { service, from, shopQuery, orderQuery, profileQuery, sign };
+    return {
+      service,
+      from,
+      shopQuery,
+      orderQuery,
+      profileQuery,
+      attemptQuery,
+      sign,
+    };
   }
+
+  it('includes the latest persisted attempt without storage paths', async () => {
+    const base = {
+      order_id: 'printing',
+      shop_id: 'shop',
+      attempt_kind: 'INITIAL',
+      execution_mode: 'AGENT',
+      device_id: 'device',
+      printer_name: 'Desk',
+      printable_path: 'print-ready/secret.pdf',
+      printable_sha256: 'a'.repeat(64),
+      resolved_at: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    const f = fixture(
+      [{ id: 'printing', state: 'IN_PRODUCTION', client_id: 'client' }],
+      null,
+      [
+        {
+          ...base,
+          attempt_id: 'second',
+          attempt_number: 2,
+          status: 'SUBMITTED',
+        },
+        {
+          ...base,
+          attempt_id: 'first',
+          attempt_number: 1,
+          status: 'FAILED_PRE_SUBMISSION',
+        },
+      ],
+    );
+    const [order] = await f.service.getShopOrders('shop');
+    expect(f.attemptQuery.in).toHaveBeenCalledWith('order_id', ['printing']);
+    expect(f.attemptQuery.eq).toHaveBeenCalledWith('shop_id', 'shop');
+    expect(order.attempt_count).toBe(2);
+    expect(order.current_attempt).toMatchObject({
+      attemptId: 'second',
+      attemptNumber: 2,
+      status: 'SUBMITTED',
+      printerName: 'Desk',
+      isStale: false,
+    });
+    expect(JSON.stringify(order.current_attempt)).not.toContain('secret');
+  });
 
   it('returns names and signed assets while fetching only clients from the shop orders', async () => {
     const f = fixture([

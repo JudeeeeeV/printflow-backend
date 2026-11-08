@@ -14,12 +14,36 @@ import { PrintJobsRepository } from './repositories/print-jobs.repository';
 import { DaemonDevicesService } from '../daemon-devices/daemon-devices.service';
 import { DeviceConnectionRegistry } from '../daemon-devices/device-connection.registry';
 import { readCookie, USER_ACCESS_COOKIE } from '../auth/auth-cookies';
+import { PrintAssetService } from './print-asset.service';
+import {
+  AGENT_ATTEMPT_CAPABILITY,
+  AGENT_PROTOCOL_VERSION,
+  presentAttempt,
+  type PrintAttemptRow,
+} from '../orders/print-fulfillment';
 
 type ConnectionRole = 'daemon' | 'clerk';
 type UserRole = 'CLERK' | 'MANAGER';
 
 const isUserRole = (value: unknown): value is UserRole =>
   value === 'CLERK' || value === 'MANAGER';
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (value: unknown): value is string =>
+  typeof value === 'string' && UUID_PATTERN.test(value);
+const AGENT_EVENT_STATUSES = new Set([
+  'RECEIVED',
+  'DOWNLOADING',
+  'SUBMITTING',
+  'SUBMITTED',
+  'FAILED_PRE_SUBMISSION',
+  'OUTCOME_UNKNOWN',
+]);
+const boundedText = (value: unknown, length: number) =>
+  typeof value === 'string' && value.trim()
+    ? value.trim().slice(0, length)
+    : null;
 
 interface SocketIdentity {
   shopId?: string;
@@ -28,6 +52,23 @@ interface SocketIdentity {
   connectionRole?: ConnectionRole;
   userRole?: UserRole;
   expiresAt?: number;
+  supportsAttempts?: boolean;
+}
+
+/** One print command bound to an attempt, device and pinned printable file. */
+export interface AgentPrintCommand {
+  attemptId: string;
+  orderId: string;
+  revisionId: string | null;
+  deviceId: string;
+  printerName: string | null;
+  settings: {
+    colorMode: string;
+    paperSize: string;
+    orientation: string;
+    copies: number;
+  };
+  file: { url: string; sha256: string | null; size: number | null };
 }
 
 type PrintflowSocket = Omit<Socket, 'data'> & { data: SocketIdentity };
@@ -66,12 +107,14 @@ export class EdgeDaemonGateway
     string,
     ReturnType<typeof setInterval>
   >();
+  private readonly attemptTouches = new Map<string, number>();
 
   constructor(
     private readonly supabaseService: SupabaseService,
     private readonly printJobsRepository: PrintJobsRepository,
     private readonly daemonDevices: DaemonDevicesService,
     private readonly deviceConnections: DeviceConnectionRegistry,
+    private readonly printAssets: PrintAssetService,
   ) {}
 
   handleConnection(client: PrintflowSocket) {
@@ -132,6 +175,7 @@ export class EdgeDaemonGateway
         client.data.shopId = identity.shopId;
         client.data.deviceId = identity.deviceId;
         client.data.connectionRole = 'daemon';
+        client.data.supportsAttempts = this.supportsAttemptProtocol(client);
         this.scheduleAuthorization(client, identity.expiresAt, token);
         void client.join(`shop_${identity.shopId}`);
 
@@ -155,10 +199,17 @@ export class EdgeDaemonGateway
         this.logger.log(
           `Authenticated printer agent connected for shop ${identity.shopId}: ${identity.deviceName}`,
         );
-        this.server.to(`shop_${identity.shopId}`).emit('daemon_status', {
-          status: 'CONNECTED',
-        });
+        this.server
+          .to(`shop_${identity.shopId}`)
+          .emit('daemon_status', this.statusPayload(client));
         client.emit('agent_command', { type: 'RESCAN_PRINTERS' });
+        if (client.data.supportsAttempts) {
+          void this.redeliverPending(client).catch((error: unknown) => {
+            this.logger.warn(
+              `Failed to redeliver pending attempts for device ${identity.deviceId}: ${error instanceof Error ? error.message : 'unknown error'}`,
+            );
+          });
+        }
       } catch (error) {
         if (!client.connected) return;
         if (
@@ -231,6 +282,7 @@ export class EdgeDaemonGateway
     if (deviceId) {
       this.deviceConnections.unregister(deviceId, client.id);
       this.deviceTouches.delete(deviceId);
+      this.attemptTouches.delete(deviceId);
     }
     if (
       shopId &&
@@ -256,76 +308,219 @@ export class EdgeDaemonGateway
     return [...(this.shopPrinters.get(shopId) ?? [])];
   }
 
-  emitBatchExecute(shopId: string, payload: unknown): boolean {
-    const socketId = this.connectedDaemons.get(shopId);
-    const daemon = socketId ? this.server.sockets.get(socketId) : undefined;
-    if (!daemon || !this.isAuthorized(daemon as PrintflowSocket)) return false;
-    daemon.emit('batch_execute', payload);
+  /** The live agent for a shop and whether it speaks the attempt protocol. */
+  getConnectedAgent(
+    shopId: string,
+  ): { deviceId: string | null; supportsAttempts: boolean } | null {
+    const daemon = this.liveDaemon(shopId);
+    if (!daemon) return null;
+    return {
+      deviceId: daemon.data.deviceId ?? null,
+      supportsAttempts: Boolean(
+        daemon.data.supportsAttempts && daemon.data.deviceId,
+      ),
+    };
+  }
+
+  /**
+   * Sends attempt-bound commands to the assigned device only. Returns false if
+   * that device has no live, authorized connection (nothing was delivered).
+   */
+  emitPrintCommands(
+    shopId: string,
+    deviceId: string,
+    commands: AgentPrintCommand[],
+  ): boolean {
+    const daemon = this.liveDaemon(shopId);
+    if (
+      !daemon ||
+      daemon.data.deviceId !== deviceId ||
+      !daemon.data.supportsAttempts
+    )
+      return false;
+    daemon.emit('print_attempts', {
+      protocolVersion: AGENT_PROTOCOL_VERSION,
+      commands,
+    });
     return true;
   }
 
-  @SubscribeMessage('job_status_update')
-  async handleJobStatusUpdate(
+  /** Broadcasts the persisted attempt state to the shop's dashboards. */
+  broadcastAttempt(shopId: string, attempt: PrintAttemptRow) {
+    this.server
+      .to(`shop_${shopId}`)
+      .emit('job_progress', presentAttempt(attempt));
+  }
+
+  async buildCommand(attempt: PrintAttemptRow): Promise<AgentPrintCommand> {
+    if (!attempt.printable_path || !attempt.device_id)
+      throw new Error('Attempt has no pinned printable file or device');
+    const settings: Record<string, unknown> = attempt.print_settings ?? {};
+    const text = (value: unknown, fallback: string) =>
+      typeof value === 'string' && value ? value : fallback;
+    const copies = Number(settings.copies);
+    return {
+      attemptId: attempt.attempt_id,
+      orderId: attempt.order_id,
+      revisionId: attempt.revision_id,
+      deviceId: attempt.device_id,
+      printerName: attempt.printer_name,
+      settings: {
+        colorMode: text(settings.colorMode, 'BLACK_AND_WHITE'),
+        paperSize: text(settings.paperSize, 'A4'),
+        orientation: text(settings.orientation, 'PORTRAIT'),
+        copies: Number.isInteger(copies) && copies >= 1 ? copies : 1,
+      },
+      file: {
+        url: await this.printAssets.sign(attempt.printable_path),
+        sha256: attempt.printable_sha256,
+        size:
+          attempt.printable_size === null
+            ? null
+            : Number(attempt.printable_size),
+      },
+    };
+  }
+
+  /** Re-sends undelivered or interrupted work; the agent journal deduplicates it. */
+  private async redeliverPending(client: PrintflowSocket) {
+    const { shopId, deviceId } = client.data;
+    if (!shopId || !deviceId) return;
+    const pending = await this.printJobsRepository.findRedeliverable(
+      deviceId,
+      shopId,
+    );
+    const commands: AgentPrintCommand[] = [];
+    for (const attempt of pending) {
+      if (attempt.printable_path)
+        commands.push(await this.buildCommand(attempt));
+    }
+    if (commands.length && this.isAuthorized(client)) {
+      client.emit('print_attempts', {
+        protocolVersion: AGENT_PROTOCOL_VERSION,
+        commands,
+        redelivery: true,
+      });
+      this.logger.log(
+        `Redelivered ${commands.length} pending attempt(s) to device ${deviceId}`,
+      );
+    }
+  }
+
+  @SubscribeMessage('attempt_event')
+  async handleAttemptEvent(
     @ConnectedSocket() client: PrintflowSocket,
-    @MessageBody() data: { orderId: string; status: string },
+    @MessageBody() data: Record<string, unknown>,
   ) {
+    const identity = this.attemptAgent(client);
+    if (!identity) return { ack: false, retry: false, code: 'UNAUTHORIZED' };
+    const sequence = Number(data?.sequence);
+    if (
+      !data ||
+      !isUuid(data.attemptId) ||
+      !Number.isSafeInteger(sequence) ||
+      sequence < 1 ||
+      typeof data.status !== 'string' ||
+      !AGENT_EVENT_STATUSES.has(data.status)
+    ) {
+      return { ack: false, retry: false, code: 'INVALID_EVENT' };
+    }
+    const occurredAt =
+      typeof data.occurredAt === 'string' &&
+      !Number.isNaN(Date.parse(data.occurredAt))
+        ? new Date(data.occurredAt).toISOString()
+        : null;
+    let result: Awaited<ReturnType<PrintJobsRepository['recordAgentEvent']>>;
+    try {
+      result = await this.printJobsRepository.recordAgentEvent({
+        attemptId: data.attemptId,
+        shopId: identity.shopId,
+        deviceId: identity.deviceId,
+        sequence,
+        status: data.status,
+        failurePhase: boundedText(data.failurePhase, 64),
+        errorCode: boundedText(data.errorCode, 64),
+        errorMessage: boundedText(data.errorMessage, 500),
+        occurredAt,
+      });
+    } catch {
+      // Not persisted: the agent keeps the event and replays it later.
+      return { ack: false, retry: true, code: 'NOT_PERSISTED' };
+    }
+    if (!result.ok) {
+      this.logger.warn(
+        `Rejected attempt event from device ${identity.deviceId}: ${result.code}`,
+      );
+      return { ack: false, retry: false, code: result.code };
+    }
+    // Acknowledge only after persistence; duplicates are acknowledged too.
+    if (result.attempt && result.result?.startsWith('APPLIED')) {
+      this.broadcastAttempt(identity.shopId, result.attempt);
+    }
+    return { ack: true, result: result.result };
+  }
+
+  @SubscribeMessage('attempt_authorize')
+  async handleAttemptAuthorize(
+    @ConnectedSocket() client: PrintflowSocket,
+    @MessageBody() data: Record<string, unknown>,
+  ) {
+    const identity = this.attemptAgent(client);
+    if (!identity || !isUuid(data?.attemptId))
+      return { authorized: false, reason: 'INVALID_REQUEST' };
+    try {
+      return await this.printJobsRepository.authorizeAttempt(
+        data.attemptId,
+        identity.shopId,
+        identity.deviceId,
+      );
+    } catch {
+      return { authorized: false, reason: 'UNAVAILABLE' };
+    }
+  }
+
+  /** Lets a restarted agent learn which local attempts are still current. */
+  @SubscribeMessage('attempt_reconcile')
+  async handleAttemptReconcile(
+    @ConnectedSocket() client: PrintflowSocket,
+    @MessageBody() data: Record<string, unknown>,
+  ) {
+    const identity = this.attemptAgent(client);
+    const ids = Array.isArray(data?.attemptIds)
+      ? data.attemptIds.filter(isUuid).slice(0, 200)
+      : [];
+    if (!identity) return { attempts: [] };
+    try {
+      const attempts = await this.printJobsRepository.findAttempts(
+        ids,
+        identity.shopId,
+      );
+      return {
+        attempts: attempts
+          .filter((attempt) => attempt.device_id === identity.deviceId)
+          .map((attempt) => ({
+            attemptId: attempt.attempt_id,
+            status: attempt.status,
+            open: !attempt.resolved_at,
+            resolution: attempt.resolution,
+          })),
+      };
+    } catch {
+      return { attempts: [], unavailable: true };
+    }
+  }
+
+  /** Order-only callbacks from older agents are never authoritative. */
+  @SubscribeMessage('job_status_update')
+  handleLegacyJobStatusUpdate(@ConnectedSocket() client: PrintflowSocket) {
     if (!this.isAuthorized(client) || client.data.connectionRole !== 'daemon') {
       client.disconnect(true);
       return { ack: false };
     }
-
-    const shopId = client.data.shopId;
-    const deviceId = client.data.deviceId;
-    if (!shopId) return { ack: false };
-    if (!deviceId && !client.data.userId) return { ack: false };
-    const allowedStatuses = [
-      'DOWNLOADING',
-      'SENT_TO_SPOOLER',
-      'COMPLETED',
-      'FAILED',
-    ];
-    if (
-      !data ||
-      typeof data.orderId !== 'string' ||
-      !allowedStatuses.includes(data.status)
-    ) {
-      return { ack: false };
-    }
-
-    const supabase = this.supabaseService.getAdminClient();
-    const { data: order, error } = await supabase
-      .from('orders')
-      .select('id, state')
-      .eq('id', data.orderId)
-      .eq('shop_id', shopId)
-      .single();
-    if (error || !order || order.state !== 'IN_PRODUCTION') {
-      return { ack: false };
-    }
-
-    if (data.status === 'COMPLETED') {
-      const { data: updatedOrder } = await supabase
-        .from('orders')
-        .update({ state: 'PRINTED' })
-        .eq('id', data.orderId)
-        .eq('shop_id', shopId)
-        .eq('state', 'IN_PRODUCTION')
-        .select('id')
-        .maybeSingle();
-      if (!updatedOrder) return { ack: false };
-    }
-
-    await this.printJobsRepository.updateJobStatus(
-      data.orderId,
-      shopId,
-      data.status,
+    this.logger.warn(
+      `Ignored a legacy order-only print callback from shop ${client.data.shopId}; agent update required`,
     );
-
-    this.server.to(`shop_${shopId}`).emit('job_progress', {
-      orderId: data.orderId,
-      status: data.status,
-    });
-    return { ack: true };
+    return { ack: false, code: 'AGENT_UPDATE_REQUIRED' };
   }
 
   @SubscribeMessage('check_daemon_status')
@@ -334,14 +529,53 @@ export class EdgeDaemonGateway
       return;
     const shopId = client.data.shopId;
     if (!shopId) return;
-    const isOnline = this.hasConnectedDaemon(shopId);
-    client.emit('daemon_status', {
-      status: isOnline ? 'CONNECTED' : 'OFFLINE',
-    });
+    const daemon = this.liveDaemon(shopId);
+    client.emit(
+      'daemon_status',
+      daemon ? this.statusPayload(daemon) : { status: 'OFFLINE' },
+    );
     client.emit(
       'printers_list',
-      isOnline ? (this.shopPrinters.get(shopId) ?? []) : [],
+      daemon ? (this.shopPrinters.get(shopId) ?? []) : [],
     );
+  }
+
+  private liveDaemon(shopId: string): PrintflowSocket | null {
+    const socketId = this.connectedDaemons.get(shopId);
+    const daemon = socketId
+      ? (this.server.sockets.get(socketId) as PrintflowSocket | undefined)
+      : undefined;
+    return daemon && this.isAuthorized(daemon) ? daemon : null;
+  }
+
+  private statusPayload(daemon: PrintflowSocket) {
+    return daemon.data.supportsAttempts && daemon.data.deviceId
+      ? { status: 'CONNECTED' }
+      : { status: 'CONNECTED', agentUpdateRequired: true };
+  }
+
+  private supportsAttemptProtocol(client: PrintflowSocket) {
+    const auth = client.handshake.auth as Record<string, unknown>;
+    const version = Number(auth.protocolVersion);
+    const capabilities = Array.isArray(auth.capabilities)
+      ? auth.capabilities
+      : [];
+    return (
+      Number.isInteger(version) &&
+      version >= AGENT_PROTOCOL_VERSION &&
+      capabilities.includes(AGENT_ATTEMPT_CAPABILITY)
+    );
+  }
+
+  /** Attempt messages require an authenticated, registered device identity. */
+  private attemptAgent(client: PrintflowSocket) {
+    if (!this.isAuthorized(client) || client.data.connectionRole !== 'daemon') {
+      client.disconnect(true);
+      return null;
+    }
+    const { shopId, deviceId, supportsAttempts } = client.data;
+    if (!shopId || !deviceId || !supportsAttempts) return null;
+    return { shopId, deviceId };
   }
 
   @SubscribeMessage('daemon_printers_update')
@@ -383,7 +617,7 @@ export class EdgeDaemonGateway
   @SubscribeMessage('daemon_heartbeat')
   handleDaemonHeartbeat(
     @ConnectedSocket() client: PrintflowSocket,
-    @MessageBody() data: { agentVersion?: string },
+    @MessageBody() data: { agentVersion?: string; waitingAttemptIds?: unknown },
   ) {
     if (
       !this.isAuthorized(client) ||
@@ -408,6 +642,21 @@ export class EdgeDaemonGateway
             `Failed to update heartbeat for device ${client.data.deviceId}: ${error instanceof Error ? error.message : 'unknown error'}`,
           );
         });
+    }
+    const waiting = Array.isArray(data?.waitingAttemptIds)
+      ? data.waitingAttemptIds.filter(isUuid).slice(0, 100)
+      : [];
+    const lastAttemptTouch = this.attemptTouches.get(client.data.deviceId) || 0;
+    if (
+      waiting.length &&
+      client.data.supportsAttempts &&
+      client.data.shopId &&
+      now - lastAttemptTouch >= 60_000
+    ) {
+      this.attemptTouches.set(client.data.deviceId, now);
+      void this.printJobsRepository
+        .touchWaitingAttempts(client.data.deviceId, client.data.shopId, waiting)
+        .catch(() => undefined);
     }
     return { ack: true };
   }
@@ -544,9 +793,10 @@ export class EdgeDaemonGateway
       this.server.sockets.get(previousSocketId)?.disconnect(true);
     }
     this.logger.warn(`Legacy development daemon connected for shop: ${shopId}`);
-    this.server.to(`shop_${shopId}`).emit('daemon_status', {
-      status: 'CONNECTED',
-    });
+    // Without a registered device identity it cannot report attempts.
+    this.server
+      .to(`shop_${shopId}`)
+      .emit('daemon_status', this.statusPayload(client));
     return true;
   }
 }

@@ -3,6 +3,7 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { PrintJobsRepository } from './repositories/print-jobs.repository';
 import { DaemonDevicesService } from '../daemon-devices/daemon-devices.service';
 import { DeviceConnectionRegistry } from '../daemon-devices/device-connection.registry';
+import { PrintAssetService } from './print-asset.service';
 
 describe('socket authorization lifetime', () => {
   beforeEach(() => jest.useFakeTimers());
@@ -17,6 +18,7 @@ describe('socket authorization lifetime', () => {
       {} as PrintJobsRepository,
       { validateAgentToken } as unknown as DaemonDevicesService,
       new DeviceConnectionRegistry(),
+      {} as PrintAssetService,
     );
     const socket = {
       id: 'socket',
