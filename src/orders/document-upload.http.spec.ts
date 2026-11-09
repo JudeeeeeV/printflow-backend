@@ -123,6 +123,7 @@ describe('order document HTTP boundary', () => {
       'student',
       expect.objectContaining({ copies: 1 }),
       expect.objectContaining({ mimetype: 'application/pdf' }),
+      expect.stringMatching(/^[0-9a-f-]{36}$/),
     );
   });
   it('retains the safe file contract for service validation failures', async () => {

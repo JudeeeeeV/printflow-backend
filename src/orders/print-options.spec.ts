@@ -77,6 +77,9 @@ interface FixtureQuery {
   order: () => FixtureQuery;
   insert: (value: Record<string, unknown>) => FixtureQuery;
   update: (value: Record<string, unknown>) => FixtureQuery;
+  match: () => FixtureQuery;
+  neq: () => FixtureQuery;
+  gte: () => FixtureQuery;
   single: () => Promise<{ data: Record<string, unknown>; error: null }>;
   maybeSingle: () => Promise<{ data: { id: string }; error: null }>;
   range: () => Promise<{
@@ -130,10 +133,14 @@ async function fixture() {
         return query;
       }),
       update: jest.fn((value: Record<string, unknown>) => {
+        if (table === 'order_operations') return query;
         writes.push(table);
         Object.assign(row, value);
         return query;
       }),
+      match: jest.fn(() => query),
+      neq: jest.fn(() => query),
+      gte: jest.fn(() => query),
       single: jest.fn(() =>
         Promise.resolve({
           data:
@@ -177,8 +184,32 @@ async function fixture() {
       }),
     ),
   };
+  const rpc = (
+    name: string,
+    args: { p_data: { message: string; order: object } },
+  ) => {
+    if (name === 'claim_order_operation') {
+      return Promise.resolve({
+        data: { outcome: 'claimed', generation: 1, plannedOrderId: 'order' },
+        error: null,
+      });
+    }
+    writes.push('orders');
+    Object.assign(row, args.p_data.order);
+    if (args.p_data.message === 'Draft submitted successfully') {
+      row.state = 'OPEN_INQUIRY';
+    }
+    return {
+      abortSignal: () =>
+        Promise.resolve({
+          data: { result: { orderId: 'order', order: row }, replacedPaths: [] },
+          error: null,
+          status: 200,
+        }),
+    };
+  };
   const supabase = {
-    getAdminClient: () => ({ from, storage: { from: () => storage } }),
+    getAdminClient: () => ({ from, rpc, storage: { from: () => storage } }),
     ensurePrivateBucket: () => Promise.resolve(),
     storagePath: (value: string) => value,
     createSignedStorageUrl: () =>
@@ -346,7 +377,7 @@ describe('document preparation persistence safety', () => {
     expect(f.writes).toEqual([]);
     expect(f.upload).not.toHaveBeenCalled();
   });
-  it('reports uncertainty when storage fails after order creation', async () => {
+  it('creates no order when storage fails', async () => {
     const f = await fixture();
     f.upload.mockRejectedValueOnce(new Error('private storage path'));
     await expect(
@@ -357,7 +388,7 @@ describe('document preparation persistence safety', () => {
         nextStep: expect.stringContaining('may be incomplete') as unknown,
       }) as unknown,
     });
-    expect(f.writes).toEqual(['orders']);
+    expect(f.writes).toEqual([]);
   });
   it.each(['missing', 'wrong type', 'download rejection', 'unreadable'])(
     'blocks submission of a %s saved draft file',

@@ -11,19 +11,16 @@ import {
   UseInterceptors,
   UploadedFile,
   BadRequestException,
+  ParseUUIDPipe,
   Query,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
-import { UpdateDraftDto } from './dto/update-draft.dto';
+import { SubmitDraftDto, UpdateDraftDto } from './dto/update-draft.dto';
 import { VerifyPaymentDto } from './dto/verify-payment.dto';
 import { UpdateOrderStateDto } from './dto/update-order-state.dto';
-import {
-  DraftPaymentDto,
-  OrderDecisionDto,
-  PaymentDisputeDto,
-} from './dto/order-decision.dto';
+import { OrderDecisionDto, PaymentDisputeDto } from './dto/order-decision.dto';
 import { UploadReceiptDto } from './dto/upload-receipt.dto';
 import { SupabaseAuthGuard } from '../iam/guards/supabase-auth.guard';
 import { RolesGuard } from '../iam/guards/roles.guard';
@@ -37,8 +34,9 @@ import {
 import { Throttle } from '@nestjs/throttler';
 import { DocumentUploadInterceptor } from '../common/document-upload.interceptor';
 import { DocumentUploadException } from '../common/document-upload-error';
+import { IdempotencyKeyGuard } from './idempotency-key.guard';
 
-type OrderRequest = Request & { user: { id: string } };
+type OrderRequest = Request & { user: { id: string }; operationKey?: string };
 
 @Controller('orders')
 @UseGuards(SupabaseAuthGuard, RolesGuard)
@@ -86,6 +84,16 @@ export class OrdersController {
     );
   }
 
+  @Get('operations/:operationKey')
+  @Roles('STUDENT')
+  @Throttle({ default: { limit: 600, ttl: 60_000 } })
+  async getOperation(
+    @Param('operationKey', ParseUUIDPipe) operationKey: string,
+    @Req() req: OrderRequest,
+  ) {
+    return this.ordersService.operationStatus(req.user.id, operationKey);
+  }
+
   @Get(':id')
   @Roles('STUDENT')
   // Limits are per IP. Checkout polls this, and students may share a campus IP.
@@ -98,6 +106,7 @@ export class OrdersController {
   @Post()
   @Roles('STUDENT')
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @UseGuards(IdempotencyKeyGuard)
   @UseInterceptors(DocumentUploadInterceptor)
   async createOrder(
     @Body() createOrderDto: CreateOrderDto,
@@ -109,29 +118,56 @@ export class OrdersController {
       throw new DocumentUploadException('EMPTY_FILE');
     }
     // createOrderDto will now optionally carry the { isDraft: true } flag from the frontend
-    return this.ordersService.createOrder(userId, createOrderDto, file);
+    return this.ordersService.createOrder(
+      userId,
+      createOrderDto,
+      file,
+      req.operationKey,
+    );
   }
 
   @Patch(':id/submit')
   @Roles('STUDENT')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @UseGuards(IdempotencyKeyGuard)
+  @UseInterceptors(DocumentUploadInterceptor)
   async submitDraft(
     @Param('id') draftId: string,
     @Req() req: OrderRequest,
-    @Body() body: DraftPaymentDto,
+    @Body() body: SubmitDraftDto,
+    @UploadedFile() file?: Express.Multer.File,
   ) {
     const userId = req.user.id;
-    return this.ordersService.submitDraft(userId, draftId, body?.paymentMethod);
+    const { paymentMethod, expectedVersion, ...settings } = body ?? {};
+    return this.ordersService.submitDraft(userId, draftId, paymentMethod, {
+      settings: settings.shopId
+        ? ({ ...settings, paymentMethod } as UpdateDraftDto)
+        : undefined,
+      expectedVersion,
+      file,
+      operationKey: req.operationKey,
+    });
   }
 
   @Patch(':id/update-draft')
   @Roles('STUDENT')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @UseGuards(IdempotencyKeyGuard)
+  @UseInterceptors(DocumentUploadInterceptor)
   async updateDraft(
     @Param('id') draftId: string,
     @Body() body: UpdateDraftDto,
     @Req() req: OrderRequest,
+    @UploadedFile() file?: Express.Multer.File,
   ) {
     const userId = req.user.id;
-    return this.ordersService.updateDraft(userId, draftId, body);
+    return this.ordersService.updateDraft(
+      userId,
+      draftId,
+      body,
+      file,
+      req.operationKey,
+    );
   }
 
   @Delete(':id/draft')
@@ -144,6 +180,7 @@ export class OrdersController {
   @Post(':id/receipt')
   @Roles('STUDENT')
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @UseGuards(IdempotencyKeyGuard)
   @UseInterceptors(
     FileInterceptor(
       'receiptFile',
@@ -165,6 +202,7 @@ export class OrdersController {
       orderId,
       receiptFile,
       body.referenceNumber,
+      req.operationKey,
     );
   }
 
