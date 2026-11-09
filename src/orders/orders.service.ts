@@ -1060,15 +1060,30 @@ export class OrdersService {
   }
 
   async disputePayment(userId: string, orderId: string, reason: string) {
-    const order = await applyOrderDecision(
-      this.supabaseService,
-      orderId,
-      userId,
-      'STUDENT',
-      'DISPUTE',
-      { reason },
-    );
-    return { message: 'Payment dispute escalated.', state: order.state, order };
+    const message = 'Payment dispute escalated.';
+    try {
+      const order = await applyOrderDecision(
+        this.supabaseService,
+        orderId,
+        userId,
+        'STUDENT',
+        'DISPUTE',
+        { reason },
+      );
+      return { message, state: order.state, order };
+    } catch (error) {
+      if (!(error instanceof ConflictException)) throw error;
+      // A retry after a lost response finds the dispute already recorded.
+      const { data: order } = await this.supabaseService
+        .getAdminClient()
+        .from('orders')
+        .select('*')
+        .eq('id', orderId)
+        .eq('client_id', userId)
+        .maybeSingle<PaymentOrder>();
+      if (order?.payment_status !== 'DISPUTED') throw error;
+      return { message, state: order.state, order };
+    }
   }
 
   async verifyPayment(
