@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Never cancel main: Render waits on these checks before deploying.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Placeholder for specs that boot AppModule. Not a real secret.
+      TOTP_ENCRYPTION_KEY: ci-only-placeholder-not-a-real-key-0123456789
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Unit tests
+        run: npm test
+      - name: Security review tests
+        run: npm run test:security
+      - name: Printer agent tests
+        run: npm run test:agent
+      - name: SQL migration tests
+        run: |
+          npm run test:signup-sql
+          npm run test:security-sql
+          npm run test:operations-sql
+          npm run test:print-sql
+          npm run test:payment-sql
+          npm run test:merged-sql
+          npm run test:queue-sql
+          node scripts/test-client-names-migration.cjs
+          node scripts/test-shop-locations.cjs
+          node scripts/test-shop-photos.cjs
