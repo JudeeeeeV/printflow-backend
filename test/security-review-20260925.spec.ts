@@ -164,8 +164,59 @@ describe('Application security regressions', () => {
         },
       ],
     });
+    // Priority #5 now commits draft changes through the operation RPC. Model
+    // that transaction's version check instead of the removed direct update.
+    const operations = new Map<string, string>();
+    const client = {
+      from: (table: string) =>
+        table === 'order_operations'
+          ? {
+              update: () => ({
+                match: () => ({
+                  select: () => ({
+                    maybeSingle: async () => ({ data: null, error: null }),
+                  }),
+                }),
+              }),
+            }
+          : db.from(table),
+      rpc: (name: string, args: Record<string, unknown>) => {
+        if (name === 'claim_order_operation') {
+          operations.set(String(args.p_key), String(args.p_action));
+          return Promise.resolve({
+            data: { outcome: 'claimed', generation: 1, plannedOrderId: row.id },
+            error: null,
+          });
+        }
+        return {
+          abortSignal: async () => {
+            const data = args.p_data as {
+              expectedVersion: number;
+              order: Record<string, unknown>;
+            };
+            if (data.expectedVersion !== row.draft_version)
+              return { data: null, error: { code: 'PF003' }, status: 409 };
+            Object.assign(row, data.order, {
+              state:
+                operations.get(String(args.p_key)) === 'SUBMIT_DRAFT'
+                  ? 'OPEN_INQUIRY'
+                  : 'DRAFT',
+              draft_version: row.draft_version + 1,
+            });
+            return {
+              data: {
+                result: { state: row.state, orderId: row.id },
+                replacedPaths: [],
+              },
+              error: null,
+              status: 200,
+            };
+          },
+        };
+      },
+    };
     const service = new OrdersService(
-      { getAdminClient: () => db } as any,
+      { getAdminClient: () => client } as any,
       {} as any,
     );
     const submitHasReadOldOptions = deferred();
