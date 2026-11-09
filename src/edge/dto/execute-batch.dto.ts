@@ -9,6 +9,9 @@ import {
 } from 'class-validator';
 
 export class ExecuteBatchDto {
+  @IsOptional()
+  @IsUUID('all')
+  reviewToken?: string;
   @IsArray()
   @ArrayMinSize(1)
   @ArrayMaxSize(25)
@@ -27,6 +30,9 @@ export class ExecuteBatchDto {
 }
 
 export class ManualProductionDto {
+  @IsOptional()
+  @IsUUID('all')
+  reviewToken?: string;
   @IsArray()
   @ArrayMinSize(1)
   @ArrayMaxSize(25)

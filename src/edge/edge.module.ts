@@ -7,6 +7,7 @@ import { SupabaseModule } from '../supabase/supabase.module';
 import { DaemonDevicesModule } from '../daemon-devices/daemon-devices.module';
 import { OrdersModule } from '../orders/orders.module';
 import { PrintAssetService } from './print-asset.service';
+import { ReviewedBatchService } from './reviewed-batch.service';
 
 @Module({
   imports: [SupabaseModule, DaemonDevicesModule, OrdersModule],
@@ -16,6 +17,7 @@ import { PrintAssetService } from './print-asset.service';
     PrintSpoolerService,
     PrintJobsRepository,
     PrintAssetService,
+    ReviewedBatchService,
   ],
   exports: [EdgeDaemonGateway],
 })

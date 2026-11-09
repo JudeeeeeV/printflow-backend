@@ -33,7 +33,8 @@
     "test:operations-sql": "node scripts/test-order-operations.cjs",
     "test:print-sql": "node scripts/test-print-jobs.cjs && node scripts/test-print-attempts.cjs",
     "test:payment-sql": "node scripts/test-payment-workflows.cjs",
-    "test:merged-sql": "node scripts/test-merged-workflows.cjs"
+    "test:merged-sql": "node scripts/test-merged-workflows.cjs",
+    "test:queue-sql": "node scripts/test-shop-queue.cjs"
   },
   "dependencies": {
     "@nestjs/common": "^11.2.5",

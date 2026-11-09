@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Param,
   ParseUUIDPipe,
   Post,
@@ -20,6 +21,8 @@ import {
 } from './dto/attempt-actions.dto';
 import { Throttle } from '@nestjs/throttler';
 import type { Request } from 'express';
+import { ReviewedBatchService } from './reviewed-batch.service';
+import { BatchPreviewDto } from './dto/batch-review.dto';
 
 interface AuthenticatedRequest extends Request {
   user: { id: string };
@@ -29,7 +32,26 @@ interface AuthenticatedRequest extends Request {
 @UseGuards(SupabaseAuthGuard, RolesGuard)
 @Roles('CLERK', 'MANAGER')
 export class EdgeController {
-  constructor(private readonly printSpoolerService: PrintSpoolerService) {}
+  constructor(
+    private readonly printSpoolerService: PrintSpoolerService,
+    private readonly batches: ReviewedBatchService,
+  ) {}
+
+  @Post('batch-preview')
+  @Header('Cache-Control', 'no-store')
+  @Throttle({ default: { limit: 60, ttl: 60000 } })
+  preview(@Req() request: AuthenticatedRequest, @Body() body: BatchPreviewDto) {
+    return this.batches.preview(request.user.id, request.user.id, body);
+  }
+
+  @Get('batches/:requestId')
+  @Header('Cache-Control', 'no-store')
+  recover(
+    @Req() request: AuthenticatedRequest,
+    @Param('requestId', ParseUUIDPipe) requestId: string,
+  ) {
+    return this.batches.recover(request.user.id, requestId);
+  }
 
   @Post('batch-execute')
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
@@ -38,12 +60,14 @@ export class EdgeController {
     @Body() body: ExecuteBatchDto,
   ) {
     const shopId = request.user.id;
-    return this.printSpoolerService.executeBatch({
+    return this.batches.execute({
       orderIds: body.orderIds,
       shopId,
       actorId: request.user.id,
       printerName: body.printerName,
       requestId: body.requestId,
+      reviewToken: body.reviewToken,
+      mode: 'AGENT',
     });
   }
 
@@ -53,11 +77,13 @@ export class EdgeController {
     @Req() request: AuthenticatedRequest,
     @Body() body: ManualProductionDto,
   ) {
-    return this.printSpoolerService.startManualProduction({
+    return this.batches.execute({
       orderIds: body.orderIds,
       shopId: request.user.id,
       actorId: request.user.id,
       requestId: body.requestId,
+      reviewToken: body.reviewToken,
+      mode: 'MANUAL',
     });
   }
 
