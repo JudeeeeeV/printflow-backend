@@ -8,6 +8,10 @@ import {
 } from '@nestjs/common';
 import { isAuthRetryableFetchError } from '@supabase/supabase-js';
 import { SupabaseService } from '../supabase/supabase.service';
+import {
+  isTemporaryAuthFailure,
+  throwIfReadFailed,
+} from '../common/upstream-failure';
 import { LoginDto } from './dto/login.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -118,10 +122,20 @@ export class AuthService {
     };
   }
 
+  private sessionServiceUnavailable() {
+    return new ServiceUnavailableException(
+      'Session service unavailable. Please try again.',
+    );
+  }
+
   async refresh(refreshToken: string) {
     const { data, error } = await this.supabaseService
       .createSessionClient()
-      .auth.refreshSession({ refresh_token: refreshToken });
+      .auth.refreshSession({ refresh_token: refreshToken })
+      .catch(() => {
+        throw this.sessionServiceUnavailable();
+      });
+    if (isTemporaryAuthFailure(error)) throw this.sessionServiceUnavailable();
     if (
       error ||
       !data.session?.access_token ||
@@ -136,6 +150,7 @@ export class AuthService {
       .select('role')
       .eq('id', data.user.id)
       .single();
+    throwIfReadFailed(profileError);
     if (profileError || !profile) {
       throw new UnauthorizedException('User profile not found');
     }

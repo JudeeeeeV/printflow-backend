@@ -88,6 +88,8 @@ export class OrdersController {
 
   @Get(':id')
   @Roles('STUDENT')
+  // Limits are per IP. Checkout polls this, and students may share a campus IP.
+  @Throttle({ default: { limit: 600, ttl: 60_000 } })
   async getOrder(@Param('id') orderId: string, @Req() req: OrderRequest) {
     const userId = req.user.id;
     return this.ordersService.getOrder(userId, orderId);

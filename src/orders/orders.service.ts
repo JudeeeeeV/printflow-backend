@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../supabase/supabase.service';
+import { throwIfReadFailed } from '../common/upstream-failure';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateDraftDto } from './dto/update-draft.dto';
 import {
@@ -450,6 +451,7 @@ export class OrdersService {
       ({ data, error } = await fetchOrder(false));
     }
 
+    throwIfReadFailed(error);
     if (error || !data) {
       throw new NotFoundException('Order not found');
     }
@@ -585,6 +587,7 @@ export class OrdersService {
       .eq('client_id', userId)
       .single();
 
+    throwIfReadFailed(fetchError);
     if (fetchError || !order || order.state !== 'DRAFT') {
       throw new BadRequestException('Draft not found or not in draft state.');
     }
@@ -658,6 +661,7 @@ export class OrdersService {
       .eq('client_id', userId)
       .single<SubmittedDraftRow>();
 
+    throwIfReadFailed(fetchError);
     if (fetchError || !order) {
       throw new NotFoundException('Draft not found');
     }
@@ -913,6 +917,7 @@ export class OrdersService {
       .eq('id', orderId)
       .eq('client_id', userId)
       .single();
+    throwIfReadFailed(error);
     if (error || !owner) throw new NotFoundException('Order not found.');
     // Reject obviously ineligible uploads before writing an unreferenced object.
     // The locked decision RPC remains authoritative when the order changes concurrently.
@@ -1048,6 +1053,7 @@ export class OrdersService {
       .eq('id', orderId)
       .eq('client_id', userId)
       .single();
+    throwIfReadFailed(error);
     if (error || !data) throw new NotFoundException('Order not found.');
     if (data.state === 'DRAFT') return this.deleteDraft(userId, orderId);
     const order = await applyOrderDecision(
