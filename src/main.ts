@@ -80,7 +80,8 @@ async function bootstrap() {
     origin: allowedOrigins,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
-    allowedHeaders: 'Content-Type, Authorization',
+    allowedHeaders: 'Content-Type, Authorization, Idempotency-Key',
+    exposedHeaders: 'Retry-After, X-Request-Id',
   });
 
   const expressApp = app.getHttpAdapter().getInstance() as unknown as {

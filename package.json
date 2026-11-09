@@ -30,6 +30,7 @@
     "test:signup-sql": "node scripts/test-signup-migration.cjs",
     "test:security": "jest --config test/security-review.jest.json --runInBand",
     "test:security-sql": "node scripts/test-security-migration.cjs",
+    "test:operations-sql": "node scripts/test-order-operations.cjs",
     "test:print-sql": "node scripts/test-print-jobs.cjs && node scripts/test-print-attempts.cjs",
     "test:payment-sql": "node scripts/test-payment-workflows.cjs",
     "test:merged-sql": "node scripts/test-merged-workflows.cjs"

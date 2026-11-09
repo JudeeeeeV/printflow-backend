@@ -8,7 +8,9 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { randomUUID } from 'node:crypto';
 import { SupabaseService } from '../supabase/supabase.service';
+import { throwIfReadFailed } from '../common/upstream-failure';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateDraftDto } from './dto/update-draft.dto';
 import {
@@ -29,6 +31,12 @@ import {
 import { validateStoredOrderDocument } from './stored-order-document';
 import { isShopOpenNow } from '../shops/shop-availability';
 import { applyOrderDecision, type PaymentOrder } from './payment-workflow';
+import {
+  OrderOperations,
+  operationFingerprint,
+  sha256,
+  type OperationClaim,
+} from './order-operations';
 import {
   ATTEMPT_COLUMNS,
   fulfillmentError,
@@ -94,6 +102,7 @@ interface DraftRow {
   order_name?: string | null;
   orientation?: PrintOrientation | null;
   copies?: number | null;
+  draft_version?: number;
 }
 
 interface SubmittedDraftRow {
@@ -101,9 +110,24 @@ interface SubmittedDraftRow {
   shop_id: string;
   paper_size: string;
   print_color_mode: string;
+  orientation?: PrintOrientation | null;
   copies?: number | null;
   draft_version: number;
 }
+
+type DraftSettings = Omit<UpdateDraftDto, 'expectedVersion'>;
+
+export interface CreatedOrderResult {
+  message: string;
+  orderId: string;
+  state: string;
+  order: PaymentOrder;
+}
+export type DraftChangeResult = CreatedOrderResult;
+export type ReceiptResult = Omit<CreatedOrderResult, 'orderId'>;
+
+/** How long a repeat of the same file to the same shop prompts for confirmation. */
+const DUPLICATE_WINDOW_MS = 30 * 60_000;
 
 interface ShopPricingRow {
   pricing_matrix: {
@@ -115,11 +139,14 @@ interface ShopPricingRow {
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
+  private readonly operations: OrderOperations;
 
   constructor(
     private readonly supabaseService: SupabaseService,
     private readonly printableDocuments: PrintableDocumentService,
-  ) {}
+  ) {
+    this.operations = new OrderOperations(supabaseService);
+  }
 
   private async requireVerifiedShop(shopId: string): Promise<void> {
     const { data, error } = await this.supabaseService
@@ -450,6 +477,7 @@ export class OrdersService {
       ({ data, error } = await fetchOrder(false));
     }
 
+    throwIfReadFailed(error);
     if (error || !data) {
       throw new NotFoundException('Order not found');
     }
@@ -475,7 +503,7 @@ export class OrdersService {
       return supabase
         .from('orders')
         .select(
-          `id, total, created_at, shop_id, shops(name), ${assetColumns}, paper_size, print_color_mode, page_count, order_name, orientation, copies, payment_method`,
+          `id, total, created_at, shop_id, shops(name), ${assetColumns}, paper_size, print_color_mode, page_count, order_name, orientation, copies, payment_method, draft_version`,
           { count: 'exact' },
         )
         .eq('client_id', userId)
@@ -558,6 +586,7 @@ export class OrdersService {
           orientation: order.orientation,
           copies: order.copies,
           paymentMethod: order.payment_method || 'GCASH',
+          draftVersion: order.draft_version,
         };
       }),
     );
@@ -575,149 +604,197 @@ export class OrdersService {
     };
   }
 
-  async updateDraft(userId: string, draftId: string, payload: UpdateDraftDto) {
-    const supabase = this.supabaseService.getAdminClient();
-
-    const { data: order, error: fetchError } = await supabase
-      .from('orders')
-      .select('state, draft_version')
-      .eq('id', draftId)
-      .eq('client_id', userId)
-      .single();
-
-    if (fetchError || !order || order.state !== 'DRAFT') {
-      throw new BadRequestException('Draft not found or not in draft state.');
-    }
-
-    await this.requireVerifiedShop(payload.shopId);
-    const { data: shop, error: shopError } = await supabase
-      .from('shops')
-      .select('pricing_matrix')
-      .eq('id', payload.shopId)
-      .eq('verification_status', 'VERIFIED')
-      .single();
-    if (shopError || !shop)
-      throw new BadRequestException('Shop is unavailable');
-
-    const pageCount = await this.getAssetPageCount(draftId);
-    const total = this.calculatePrice(
-      shop.pricing_matrix,
-      payload.paperSize,
-      payload.printColorMode,
-      pageCount,
-      payload.copies,
+  async updateDraft(
+    userId: string,
+    draftId: string,
+    payload: UpdateDraftDto,
+    file?: Express.Multer.File,
+    operationKey: string = randomUUID(),
+  ) {
+    const contentHash = file ? this.assertPrintableUpload(file) : null;
+    const { expectedVersion, ...settings } = payload;
+    return this.operations.run<DraftChangeResult>(
+      {
+        userId,
+        key: operationKey,
+        action: 'UPDATE_DRAFT',
+        targetId: draftId,
+        contentHash,
+        fingerprint: operationFingerprint({
+          settings,
+          expectedVersion,
+          contentHash,
+        }),
+      },
+      (claim) =>
+        this.changeDraft(claim, userId, draftId, {
+          settings,
+          expectedVersion,
+          file,
+          submit: false,
+        }),
     );
-
-    const { data: updatedDraft, error: updateError } = await supabase
-      .from('orders')
-      .update({
-        shop_id: payload.shopId,
-        paper_size: payload.paperSize,
-        print_color_mode: payload.printColorMode,
-        total,
-        page_count: pageCount,
-        ...(payload.paymentMethod
-          ? { payment_method: payload.paymentMethod }
-          : {}),
-        order_name: payload.orderName.trim(),
-        orientation: payload.orientation,
-        copies: payload.copies,
-      })
-      .eq('id', draftId)
-      .eq('client_id', userId)
-      .eq('state', 'DRAFT')
-      .eq('draft_version', order.draft_version)
-      .select('*')
-      .maybeSingle<PaymentOrder>();
-
-    if (updateError) {
-      throw new InternalServerErrorException('Failed to update draft.');
-    }
-    if (!updatedDraft) {
-      throw new ConflictException(
-        'This draft changed while you were editing. Reload it and try again.',
-      );
-    }
-
-    return { message: 'Draft updated successfully', order: updatedDraft };
   }
 
   async submitDraft(
     userId: string,
     draftId: string,
     paymentMethod?: 'GCASH' | 'CASH_ON_PICKUP',
+    options: {
+      settings?: DraftSettings;
+      expectedVersion?: number;
+      file?: Express.Multer.File;
+      operationKey?: string;
+    } = {},
   ) {
+    const { settings, expectedVersion, file } = options;
+    const contentHash = file ? this.assertPrintableUpload(file) : null;
+    return this.operations.run<DraftChangeResult>(
+      {
+        userId,
+        key: options.operationKey ?? randomUUID(),
+        action: 'SUBMIT_DRAFT',
+        targetId: draftId,
+        contentHash,
+        fingerprint: operationFingerprint({
+          settings,
+          paymentMethod,
+          expectedVersion,
+          contentHash,
+        }),
+      },
+      (claim) =>
+        this.changeDraft(claim, userId, draftId, {
+          settings,
+          paymentMethod,
+          expectedVersion,
+          file,
+          submit: true,
+        }),
+    );
+  }
+
+  /** Saves or submits a draft in place, in one transaction. */
+  private async changeDraft(
+    claim: OperationClaim,
+    userId: string,
+    draftId: string,
+    change: {
+      settings?: DraftSettings;
+      paymentMethod?: 'GCASH' | 'CASH_ON_PICKUP';
+      expectedVersion?: number;
+      file?: Express.Multer.File;
+      submit: boolean;
+    },
+  ): Promise<DraftChangeResult> {
     const supabase = this.supabaseService.getAdminClient();
+    const { settings, file, submit } = change;
 
     const { data: order, error: fetchError } = await supabase
       .from('orders')
       .select(
-        'state, shop_id, paper_size, print_color_mode, copies, draft_version',
+        'state, shop_id, paper_size, print_color_mode, orientation, copies, draft_version',
       )
       .eq('id', draftId)
       .eq('client_id', userId)
       .single<SubmittedDraftRow>();
 
+    throwIfReadFailed(fetchError);
     if (fetchError || !order) {
-      throw new NotFoundException('Draft not found');
+      if (submit) throw new NotFoundException('Draft not found');
+      throw new BadRequestException('Draft not found or not in draft state.');
     }
-
     if (order.state !== 'DRAFT') {
-      throw new BadRequestException('Order is not a draft.');
+      if (submit) throw new BadRequestException('Order is not a draft.');
+      throw new BadRequestException('Draft not found or not in draft state.');
+    }
+    if (
+      change.expectedVersion !== undefined &&
+      change.expectedVersion !== order.draft_version
+    ) {
+      throw new ConflictException({
+        code: 'DRAFT_VERSION_CONFLICT',
+        message:
+          'This draft changed while you were editing. Reload it and try again.',
+      });
     }
 
-    await this.requireVerifiedShop(order.shop_id);
+    const shopId = settings?.shopId ?? order.shop_id;
+    const paperSize = settings?.paperSize ?? order.paper_size;
+    const colorMode = settings?.printColorMode ?? order.print_color_mode;
+    const copies = settings?.copies ?? order.copies ?? 1;
+    const orientation = (settings?.orientation ??
+      order.orientation ??
+      'PORTRAIT') as PrintOrientation;
+
+    await this.requireVerifiedShop(shopId);
     const { data: shop, error: shopError } = await supabase
       .from('shops')
       .select(
         'pricing_matrix, availability_override, opens_at, closes_at, timezone',
       )
-      .eq('id', order.shop_id)
+      .eq('id', shopId)
       .single();
     if (shopError || !shop)
       throw new BadRequestException('Shop is unavailable');
-    if (!isShopOpenNow(shop))
+    if (submit && !isShopOpenNow(shop))
       throw new BadRequestException('Shop is currently closed');
-    const pageCount = await this.getAssetPageCount(draftId);
+
+    let pageCount: number;
+    let asset: Record<string, unknown> | undefined;
+    if (file) {
+      const printable = await this.printableDocuments
+        .normalize(file, paperSize, orientation)
+        .catch((error: unknown) => {
+          throw documentUploadError(error);
+        });
+      pageCount = printable.pageCount;
+      asset = await this.storePrintable(
+        claim,
+        `${userId}/${draftId}`,
+        printable.buffer,
+        file,
+      );
+    } else {
+      pageCount = await this.getAssetPageCount(draftId);
+    }
+
     const total = this.calculatePrice(
       shop.pricing_matrix,
-      order.paper_size,
-      order.print_color_mode,
+      paperSize,
+      colorMode,
       pageCount,
-      order.copies ?? 1,
+      copies,
     );
+    const paymentMethod = settings?.paymentMethod ?? change.paymentMethod;
 
-    const { data: submittedDraft, error: updateError } = await supabase
-      .from('orders')
-      .update({
-        ...(paymentMethod ? { payment_method: paymentMethod } : {}),
-        state: 'OPEN_INQUIRY',
+    const { result, replacedPaths } = await claim.commit<DraftChangeResult>({
+      message: submit
+        ? 'Draft submitted successfully'
+        : 'Draft updated successfully',
+      expectedVersion: change.expectedVersion ?? order.draft_version,
+      order: {
+        shop_id: shopId,
+        paper_size: paperSize,
+        print_color_mode: colorMode,
         total,
         page_count: pageCount,
-        created_at: new Date().toISOString(), // This resets the 15-minute clock!
-      })
-      .eq('id', draftId)
-      .eq('client_id', userId)
-      .eq('state', 'DRAFT')
-      .eq('draft_version', order.draft_version)
-      .select('*')
-      .maybeSingle<PaymentOrder>();
+        ...(paymentMethod ? { payment_method: paymentMethod } : {}),
+        ...(settings ? { order_name: settings.orderName.trim() } : {}),
+        orientation,
+        copies,
+      },
+      ...(asset ? { asset } : {}),
+    });
 
-    if (updateError) {
-      throw new InternalServerErrorException('Failed to submit draft.');
+    if (replacedPaths.length) {
+      // The commit no longer references these, so a failure only wastes space.
+      const { error } = await supabase.storage
+        .from('assets')
+        .remove(replacedPaths);
+      if (error) this.logger.warn('Could not remove a replaced draft file.');
     }
-    if (!submittedDraft) {
-      throw new ConflictException(
-        'This draft changed while you were submitting. Review it and try again.',
-      );
-    }
-
-    return {
-      message: 'Draft submitted successfully',
-      orderId: draftId,
-      state: submittedDraft.state,
-      order: submittedDraft,
-    };
+    return result;
   }
 
   async deleteDraft(userId: string, draftId: string) {
@@ -739,12 +816,8 @@ export class OrdersService {
     return { message: 'Draft deleted successfully' };
   }
 
-  async createOrder(
-    userId: string,
-    payload: CreateOrderDto,
-    file: Express.Multer.File,
-  ) {
-    const supabase = this.supabaseService.getAdminClient();
+  /** Checks only the upload itself, so the outcome depends on the inputs alone. */
+  private assertPrintableUpload(file: Express.Multer.File): string {
     if (
       !PRINTABLE_DOCUMENT_MIME_TYPES.includes(
         file.mimetype as (typeof PRINTABLE_DOCUMENT_MIME_TYPES)[number],
@@ -759,127 +832,144 @@ export class OrdersService {
     } catch (error) {
       throw documentUploadError(error);
     }
+    return sha256(file.buffer);
+  }
 
-    // Evaluate the string sent by FormData
-    const isDraftOrder = payload.isDraft === 'true';
-    const initialState = isDraftOrder ? 'DRAFT' : 'OPEN_INQUIRY';
-
-    // Fetch shop pricing matrix
-    const { data: shop, error: shopError } = await supabase
-      .from('shops')
-      .select(
-        'pricing_matrix, availability_override, opens_at, closes_at, timezone',
-      )
-      .eq('id', payload.shopId)
-      .eq('verification_status', 'VERIFIED')
-      .single();
-
-    if (shopError || !shop) {
-      throw new InternalServerErrorException('Failed to fetch shop details.');
-    }
-    if (!isDraftOrder && !isShopOpenNow(shop)) {
-      throw new BadRequestException('This shop is currently closed.');
-    }
-
-    const pricingMatrix = (shop as unknown as ShopPricingRow).pricing_matrix;
-
-    const printable = await this.printableDocuments
-      .normalize(file, payload.paperSize, payload.orientation)
-      .catch((error: unknown) => {
-        throw documentUploadError(error);
-      });
-    const pageCount = printable.pageCount;
-
-    const calculatedTotal = this.calculatePrice(
-      pricingMatrix,
-      payload.paperSize,
-      payload.printColorMode,
-      pageCount,
-      payload.copies,
-    );
-
-    // 1. Create the base order ledger entry
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    const { data: order, error: orderError } = await supabase
-      .from('orders')
-      .insert({
-        client_id: userId,
-
-        shop_id: payload.shopId,
-        state: initialState,
-        total: calculatedTotal,
-        print_color_mode: payload.printColorMode,
-        paper_size: payload.paperSize,
-        page_count: pageCount,
-        ...(payload.paymentMethod
-          ? { payment_method: payload.paymentMethod }
-          : {}),
-        order_name: payload.orderName.trim(),
-        orientation: payload.orientation,
-        copies: payload.copies,
-      })
-      .select()
-      .single();
-
-    if (orderError) {
-      throw new InternalServerErrorException(
-        'Failed to create order ledger entry: ' + orderError.message,
-      );
-    }
-
-    // 2. Store a normalized PDF so every printer agent receives one format.
+  /** The path is fixed per operation, so a retry replaces rather than strands. */
+  private async storePrintable(
+    claim: OperationClaim,
+    prefix: string,
+    buffer: Buffer,
+    file: Express.Multer.File,
+  ): Promise<Record<string, unknown>> {
     try {
       await this.ensureAssetsBucket();
       const originalFileName =
         file.originalname.split(/[\\/]/).pop()?.replaceAll('\0', '').trim() ||
         null;
-      const fileName = secureObjectName(
-        `${userId}/${(order as { id: string }).id}`,
-        'application/pdf',
-      );
-      const { error: uploadError } = await supabase.storage
-        .from('assets')
-        .upload(fileName, printable.buffer, {
+      const path = `${prefix}/${claim.key}.pdf`;
+      await claim.stage('assets', path);
+      const { error: uploadError } = await this.supabaseService
+        .getAdminClient()
+        .storage.from('assets')
+        .upload(path, buffer, {
           contentType: 'application/pdf',
+          upsert: true,
           metadata: originalFileName ? { originalFileName } : undefined,
         });
-
-      if (uploadError) {
-        throw new DocumentUploadException('UPLOAD_FAILED');
-      }
-
-      // 3. Link the design asset to the newly created order
-      const assetBase = {
-        order_id: (order as { id: string }).id,
-        file_url: fileName,
+      if (uploadError) throw new DocumentUploadException('UPLOAD_FAILED');
+      return {
+        path,
         dpi: 300, // Baseline required by application logic
-        file_type: 'PDF',
+        fileType: 'PDF',
+        originalFilename: originalFileName,
       };
-      let { error: assetError } = await supabase.from('assets').insert({
-        ...assetBase,
-        original_filename: originalFileName,
-      });
-      if (isMissingOriginalFilenameColumn(assetError)) {
-        ({ error: assetError } = await supabase
-          .from('assets')
-          .insert(assetBase));
-      }
-
-      if (assetError) {
-        throw new DocumentUploadException('UPLOAD_FAILED');
-      }
     } catch {
       throw new DocumentUploadException('UPLOAD_FAILED');
     }
+  }
 
-    return {
-      message: 'Order created successfully',
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment,@typescript-eslint/no-unsafe-member-access
-      orderId: order.id,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment,@typescript-eslint/no-unsafe-member-access
-      state: order.state,
-      order: order as PaymentOrder,
-    };
+  async createOrder(
+    userId: string,
+    payload: CreateOrderDto,
+    file: Express.Multer.File,
+    operationKey: string = randomUUID(),
+  ) {
+    const contentHash = this.assertPrintableUpload(file);
+    // Evaluate the string sent by FormData
+    const isDraftOrder = payload.isDraft === 'true';
+    const { confirmDuplicate, ...inputs } = payload;
+    const request = {
+      userId,
+      key: operationKey,
+      action: isDraftOrder ? 'CREATE_DRAFT' : 'CREATE_ORDER',
+      targetId: payload.shopId,
+      contentHash,
+      fingerprint: operationFingerprint({ ...inputs, contentHash }),
+    } as const;
+
+    return this.operations.run<CreatedOrderResult>(request, async (claim) => {
+      if (!isDraftOrder && confirmDuplicate !== 'true') {
+        const duplicateId = await this.operations.findRecentDuplicate(
+          request,
+          DUPLICATE_WINDOW_MS,
+        );
+        if (duplicateId) {
+          throw new ConflictException({
+            code: 'POSSIBLE_DUPLICATE',
+            orderId: duplicateId,
+            message: 'You recently submitted this file to this shop.',
+          });
+        }
+      }
+
+      const supabase = this.supabaseService.getAdminClient();
+      // Fetch shop pricing matrix
+      const { data: shop, error: shopError } = await supabase
+        .from('shops')
+        .select(
+          'pricing_matrix, availability_override, opens_at, closes_at, timezone',
+        )
+        .eq('id', payload.shopId)
+        .eq('verification_status', 'VERIFIED')
+        .single();
+
+      if (shopError || !shop) {
+        throw new InternalServerErrorException('Failed to fetch shop details.');
+      }
+      if (!isDraftOrder && !isShopOpenNow(shop)) {
+        throw new BadRequestException('This shop is currently closed.');
+      }
+
+      const printable = await this.printableDocuments
+        .normalize(file, payload.paperSize, payload.orientation)
+        .catch((error: unknown) => {
+          throw documentUploadError(error);
+        });
+      const pageCount = printable.pageCount;
+      const calculatedTotal = this.calculatePrice(
+        (shop as unknown as ShopPricingRow).pricing_matrix,
+        payload.paperSize,
+        payload.printColorMode,
+        pageCount,
+        payload.copies,
+      );
+
+      // Store a normalized PDF so every printer agent receives one format.
+      const asset = await this.storePrintable(
+        claim,
+        `${userId}/${claim.plannedOrderId}`,
+        printable.buffer,
+        file,
+      );
+      const { result } = await claim.commit<CreatedOrderResult>({
+        message: 'Order created successfully',
+        order: {
+          state: isDraftOrder ? 'DRAFT' : 'OPEN_INQUIRY',
+          total: calculatedTotal,
+          print_color_mode: payload.printColorMode,
+          paper_size: payload.paperSize,
+          page_count: pageCount,
+          ...(payload.paymentMethod
+            ? { payment_method: payload.paymentMethod }
+            : {}),
+          order_name: payload.orderName.trim(),
+          orientation: payload.orientation,
+          copies: payload.copies,
+        },
+        asset,
+      });
+      return result;
+    });
+  }
+
+  operationStatus(userId: string, operationKey: string) {
+    return this.operations.status(userId, operationKey);
+  }
+
+  @Cron(CronExpression.EVERY_HOUR)
+  sweepOrderOperations() {
+    return this.operations.sweep();
   }
 
   async ensureReceiptsBucket() {
@@ -895,6 +985,7 @@ export class OrdersService {
     orderId: string,
     file: Express.Multer.File,
     referenceNumber?: string,
+    operationKey: string = randomUUID(),
   ) {
     if (
       typeof referenceNumber !== 'string' ||
@@ -906,55 +997,66 @@ export class OrdersService {
       );
     }
     assertFileSignature(file, IMAGE_MIME_TYPES);
-    const supabase = this.supabaseService.getAdminClient();
-    const { data: owner, error } = await supabase
-      .from('orders')
-      .select('id, payment_method, payment_status, state, expires_at')
-      .eq('id', orderId)
-      .eq('client_id', userId)
-      .single();
-    if (error || !owner) throw new NotFoundException('Order not found.');
-    // Reject obviously ineligible uploads before writing an unreferenced object.
-    // The locked decision RPC remains authoritative when the order changes concurrently.
-    if (owner.payment_method !== 'GCASH' ||
-      ['DRAFT', 'CANCELLED', 'REJECTED', 'EXPIRED', 'COMPLETED'].includes(owner.state) ||
-      !['UNPAID', 'REJECTED', 'REVIEW_REQUIRED'].includes(owner.payment_status) ||
-      (owner.expires_at && new Date(owner.expires_at).getTime() <= Date.now())) {
-      throw new ConflictException('Receipt submission is not available for this order. Refresh its status.');
-    }
-    await this.ensureReceiptsBucket();
-    const fileName = secureObjectName(`${userId}/${orderId}`, file.mimetype);
-    const { error: uploadError } = await supabase.storage
-      .from('receipts')
-      .upload(fileName, file.buffer, { contentType: file.mimetype });
-    if (uploadError)
-      throw new InternalServerErrorException(
-        'The receipt image could not be stored.',
-      );
-    let order: PaymentOrder;
-    try {
-      order = await applyOrderDecision(
-        this.supabaseService, orderId, userId, 'STUDENT', 'UPLOAD_RECEIPT',
-        { receiptPath: fileName, reference: referenceNumber.trim() },
-      );
-    } catch (decisionError) {
-      // Only definite rejections rolled back. A timeout may already have committed.
-      if (decisionError instanceof BadRequestException || decisionError instanceof ConflictException ||
-        decisionError instanceof ForbiddenException || decisionError instanceof NotFoundException) {
-        try {
-          const { error: cleanupError } = await supabase.storage.from('receipts').remove([fileName]);
-          if (cleanupError) this.logger.warn('Could not remove a rejected receipt upload.');
-        } catch {
-          this.logger.warn('Could not remove a rejected receipt upload.');
+    const reference = referenceNumber.trim();
+    const contentHash = sha256(file.buffer);
+    return this.operations.run<ReceiptResult>(
+      {
+        userId,
+        key: operationKey,
+        action: 'UPLOAD_RECEIPT',
+        targetId: orderId,
+        contentHash,
+        fingerprint: operationFingerprint({ reference, contentHash }),
+      },
+      async (claim) => {
+        const supabase = this.supabaseService.getAdminClient();
+        const { data: owner, error } = await supabase
+          .from('orders')
+          .select('id, payment_method, payment_status, state, expires_at')
+          .eq('id', orderId)
+          .eq('client_id', userId)
+          .single();
+        throwIfReadFailed(error);
+        if (error || !owner) throw new NotFoundException('Order not found.');
+        // Reject obviously ineligible uploads before writing an unreferenced object.
+        // The locked decision RPC remains authoritative when the order changes concurrently.
+        if (
+          owner.payment_method !== 'GCASH' ||
+          ['DRAFT', 'CANCELLED', 'REJECTED', 'EXPIRED', 'COMPLETED'].includes(
+            owner.state,
+          ) ||
+          !['UNPAID', 'REJECTED', 'REVIEW_REQUIRED'].includes(
+            owner.payment_status,
+          ) ||
+          (owner.expires_at &&
+            new Date(owner.expires_at).getTime() <= Date.now())
+        ) {
+          throw new ConflictException(
+            'Receipt submission is not available for this order. Refresh its status.',
+          );
         }
-      }
-      throw decisionError;
-    }
-    return {
-      message: 'Receipt saved. Awaiting payment verification.',
-      state: order.state,
-      order,
-    };
+        await this.ensureReceiptsBucket();
+        const extension = secureObjectName('', file.mimetype).split('.').pop();
+        const fileName = `${userId}/${orderId}/${claim.key}.${extension}`;
+        await claim.stage('receipts', fileName);
+        const { error: uploadError } = await supabase.storage
+          .from('receipts')
+          .upload(fileName, file.buffer, {
+            contentType: file.mimetype,
+            upsert: true,
+          });
+        if (uploadError)
+          throw new InternalServerErrorException(
+            'The receipt image could not be stored.',
+          );
+        const { result } = await claim.commit<ReceiptResult>({
+          message: 'Receipt saved. Awaiting payment verification.',
+          receiptPath: fileName,
+          reference,
+        });
+        return result;
+      },
+    );
   }
 
   async disputePayment(userId: string, orderId: string, reason: string) {
@@ -1048,6 +1150,7 @@ export class OrdersService {
       .eq('id', orderId)
       .eq('client_id', userId)
       .single();
+    throwIfReadFailed(error);
     if (error || !data) throw new NotFoundException('Order not found.');
     if (data.state === 'DRAFT') return this.deleteDraft(userId, orderId);
     const order = await applyOrderDecision(

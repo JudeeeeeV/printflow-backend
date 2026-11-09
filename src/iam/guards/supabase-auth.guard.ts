@@ -2,9 +2,14 @@ import {
   CanActivate,
   ExecutionContext,
   Injectable,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { SupabaseService } from '../../supabase/supabase.service';
+import {
+  isTemporaryAuthFailure,
+  throwIfReadFailed,
+} from '../../common/upstream-failure';
 import { Request } from 'express';
 import {
   bearerToken,
@@ -41,6 +46,11 @@ export class SupabaseAuthGuard implements CanActivate {
       error,
     } = await supabase.auth.getUser(token);
 
+    if (isTemporaryAuthFailure(error)) {
+      throw new ServiceUnavailableException(
+        'Sign-in service unavailable. Please try again.',
+      );
+    }
     if (error || !user) {
       throw new UnauthorizedException('Invalid or expired token');
     }
@@ -52,6 +62,7 @@ export class SupabaseAuthGuard implements CanActivate {
       .eq('id', user.id)
       .single();
 
+    throwIfReadFailed(profileError);
     if (profileError || !userProfile) {
       throw new UnauthorizedException('User profile not found');
     }

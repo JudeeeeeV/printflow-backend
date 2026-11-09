@@ -128,6 +128,7 @@ supabase/migrations/20260919_encrypt_admin_totp.sql
 supabase/migrations/20260919_admin_sessions.sql
 supabase/migrations/20260919_admin_audit_events.sql
 supabase/migrations/20260924020000_print_jobs.sql
+supabase/migrations/20261109010000_order_operations.sql
 ```
 
 If batch printing fails and the backend logs report `PGRST205` for

@@ -367,24 +367,35 @@ describe('OrdersService.createOrder', () => {
         error: null,
       }),
     };
-    const ordersQuery = {
-      insert: jest.fn().mockReturnThis(),
-      select: jest.fn().mockReturnThis(),
-      single: jest.fn().mockResolvedValue({
-        data: { id: 'order', state: 'DRAFT' },
-        error: null,
-      }),
-    };
-    const assetsQuery = {
-      insert: jest.fn().mockResolvedValue({ error: null }),
+    const operationsQuery = {
+      update: jest.fn().mockReturnThis(),
+      match: jest.fn().mockResolvedValue({ error: null }),
     };
     const upload = jest.fn().mockResolvedValue({ error: null });
+    const rpc = jest.fn((name: string) =>
+      name === 'claim_order_operation'
+        ? Promise.resolve({
+            data: {
+              outcome: 'claimed',
+              generation: 1,
+              plannedOrderId: 'order',
+            },
+            error: null,
+          })
+        : {
+            abortSignal: () =>
+              Promise.resolve({
+                data: { result: { orderId: 'order' }, replacedPaths: [] },
+                error: null,
+                status: 200,
+              }),
+          },
+    );
     const supabase = {
-      from: jest.fn((table: string) => {
-        if (table === 'shops') return shopsQuery;
-        if (table === 'orders') return ordersQuery;
-        return assetsQuery;
-      }),
+      rpc,
+      from: jest.fn((table: string) =>
+        table === 'shops' ? shopsQuery : operationsQuery,
+      ),
       storage: { from: jest.fn().mockReturnValue({ upload }) },
     };
     const supabaseService = {
@@ -422,20 +433,18 @@ describe('OrdersService.createOrder', () => {
       file,
     );
 
-    expect(assetsQuery.insert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        original_filename: 'Lesson notes.docx',
-        file_type: 'PDF',
-      }),
-    );
-    expect(ordersQuery.insert).toHaveBeenCalledWith(
-      expect.objectContaining({
+    const commitCall = rpc.mock.calls.find(
+      ([name]) => name === 'commit_order_operation',
+    ) as unknown as [string, { p_data: Record<string, unknown> }];
+    expect(commitCall[1].p_data).toMatchObject({
+      asset: { originalFilename: 'Lesson notes.docx', fileType: 'PDF' },
+      order: {
         order_name: 'Lesson notes',
         orientation: 'PORTRAIT',
         copies: 2,
         total: 6,
-      }),
-    );
+      },
+    });
     expect(printableDocuments.normalize).toHaveBeenCalledWith(
       file,
       'A4',
@@ -447,36 +456,5 @@ describe('OrdersService.createOrder', () => {
     expect(uploadCalls[0][2].metadata?.originalFileName).toBe(
       'Lesson notes.docx',
     );
-
-    assetsQuery.insert
-      .mockResolvedValueOnce({
-        error: {
-          code: 'PGRST204',
-          message:
-            "Could not find the 'original_filename' column in the schema cache",
-        },
-      })
-      .mockResolvedValueOnce({ error: null });
-
-    await service.createOrder(
-      'client',
-      {
-        shopId: 'shop',
-        isDraft: 'true',
-        paperSize: 'A4',
-        printColorMode: 'BLACK_AND_WHITE',
-        orderName: 'Lesson notes',
-        orientation: 'PORTRAIT',
-        copies: 2,
-      },
-      file,
-    );
-
-    const insertCalls = assetsQuery.insert.mock.calls as unknown as Array<
-      [Record<string, unknown>]
-    >;
-    expect(insertCalls).toHaveLength(3);
-    expect(insertCalls[2][0]).not.toHaveProperty('original_filename');
-    expect(insertCalls[2][0]).toHaveProperty('file_type', 'PDF');
   });
 });

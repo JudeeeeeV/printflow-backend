@@ -25,6 +25,11 @@ export class CreateOrderDto {
   @IsString()
   isDraft?: string;
 
+  /** The student chose to submit again after a duplicate warning. */
+  @IsOptional()
+  @IsIn(['true'])
+  confirmDuplicate?: string;
+
   @IsString()
   @IsNotEmpty()
   paperSize: string;
