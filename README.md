@@ -1,203 +1,265 @@
-<div align="center">
+# PrintFlow - Backend API and Windows Printer Agent
 
-# ⚙️ PrintFlow - Backend API & Edge Daemon
+## 1. Project Description
 
-<a href="https://readme-typing-svg.herokuapp.com">
-  <img src="https://readme-typing-svg.herokuapp.com/?lines=Central+Nervous+System;REST+API+&+WSS+Gateway;Powered+by+Node.js+&+NestJS&font=Inter&center=true&width=550&height=50&color=10B981&vCenter=true&size=22" alt="Typing SVG" />
-</a>
+PrintFlow supports campus document printing for students, print-shop operators, and platform administrators. This repository contains the NestJS API, Supabase integration, incremental database migrations, and Windows printing agent. The API serves the [student/shop frontend](https://github.com/JudeeeeeV/printflow-frontend), [administrator portal](https://github.com/JudeeeeeV/printflow-admin), and registered agents.
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Runtime-Node.js-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node.js" />
-  <img src="https://img.shields.io/badge/Framework-NestJS-E0234E?style=for-the-badge&logo=nestjs&logoColor=white" alt="NestJS" />
-  <img src="https://img.shields.io/badge/Database-PostgreSQL-4169E1?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL" />
-  <img src="https://img.shields.io/badge/Sockets-Socket.io-010101?style=for-the-badge&logo=socketdotio&logoColor=white" alt="Socket.io" />
-  <img src="https://img.shields.io/badge/AI-OpenAI-412991?style=for-the-badge&logo=openai&logoColor=white" alt="OpenAI" />
-</p>
+## 2. Features and Responsibilities
 
-</div>
+- Supabase-backed user sessions, profiles, and optional CIT Microsoft sign-in.
+- Shop verification, pricing, availability, locations, and GCash details.
+- Drafts, actionable document validation, normalization to PDF, operation recovery, queue filtering, and batch review.
+- Separate GCash and cash-on-pickup workflows, receipt history, disputes, refunds, and audit records.
+- Print attempts, operator output confirmation, collection, device registration, and printer discovery.
+- Administrator authorization, TOTP two-factor authentication, protected sessions, and audit events.
+- Analytics, CSV data, server-sent data events, and Socket.IO communication.
 
-<br />
+| Important path                                    | Responsibility                                                                |
+| ------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `src/main.ts`, `src/app.module.ts`                | Startup, environment checks, CORS, validation, security headers, and modules. |
+| `src/auth/`, `src/iam/`, `src/admin/`             | User authentication, authorization guards, and administrator/TOTP workflows.  |
+| `src/orders/`, `src/shops/`, `src/analytics/`     | Business rules, payments, fulfillment, shops, and reporting.                  |
+| `src/edge/`, `src/daemon-devices/`, `src/events/` | Printer protocol, registered devices, installer metadata, and live updates.   |
+| `src/supabase/`, `supabase/migrations/`           | Server-side Supabase client, private storage, and incremental SQL.            |
+| `agent/`, `scripts/`, `docs/`                     | Windows agent, maintenance/release utilities, and technical guides.           |
 
-## 📖 Context
+The web applications call NestJS over HTTP; NestJS uses Supabase Auth, PostgreSQL, and Storage. The Windows agent connects through the Socket.IO `/daemon` namespace and submits reviewed jobs to Windows printers. The backend uses Supabase JS/PostgREST and database functions, not Prisma.
 
-This Node.js/NestJS application is the central nervous system for CIT-U's PrintFlow. It houses the PostgreSQL database schema, the OpenAI Agentic AI verification routes, and the Socket.io WSS Gateway that communicates with the physical print daemons installed on the shop computers.
+## 3. Technology Stack
 
----
+| Area                       | Technologies                                                                            |
+| -------------------------- | --------------------------------------------------------------------------------------- |
+| Runtime/API                | Node.js 24, TypeScript, NestJS 11, Express.                                             |
+| Persistence/authentication | Supabase PostgreSQL, Auth, Storage, and Supabase JS.                                    |
+| Live services              | Socket.IO, server-sent events, scheduling.                                              |
+| Document processing        | `pdf-lib`, Sharp, JSZip, LibreOffice Writer.                                            |
+| Security                   | Role/ownership checks, RLS/restricted RPCs, Helmet, throttling, bcrypt, encrypted TOTP. |
+| Validation                 | Jest, Supertest, ESLint, Prettier, isolated PGlite SQL regressions.                     |
+| Windows agent              | Packaged Node.js runtime, Socket.IO client, `pdf-to-printer`.                           |
 
-## 🏗 Architecture Diagram
+OpenAI is an optional shop-permit review integration. Standard student file checks do not certify AI print quality or minimum DPI; administrators retain the final shop-verification decision.
 
-```mermaid
-graph TD
-    S[Student/Shop<br/>React Frontend] -->|REST / WebSockets| B(Backend API<br/>Node.js/NestJS)
-    B <-->|Read / Write| DB[(PostgreSQL Database)]
-    B <-->|WSS Gateway| E[Edge Daemon<br/>Physical Shop PC]
-    E -->|Print Commands| W[Windows Spooler]
+## 4. Prerequisites
+
+- Git, npm, and **Node.js `>=24.14.1 <25`**. Docker/Render target 24.14.1.
+- Access to an **existing, initialized development Supabase project**, its server-only key, and approved migration history. The tracked incremental migrations do not provide a complete initial schema for an empty project.
+- Independent secrets of at least 32 characters for JWT/TOTP configuration.
+- LibreOffice Writer on the API host for DOCX conversion, or Docker using the included image. Windows printing hardware is only needed to exercise the agent.
+
+## 5. Installation and Local Setup
+
+```bash
+git clone https://github.com/JudeeeeeV/printflow-backend.git
+cd printflow-backend
+npm install
 ```
 
----
+Copy the example **only if `.env` does not already exist**, then replace placeholders privately:
 
-## 🔄 Order State Machine
-
-The lifecycle of an order follows a strict state machine to ensure data integrity and proper payment procurement:
-
-| State               | Description                                                                 |
-| :------------------ | :-------------------------------------------------------------------------- |
-| `OPEN_INQUIRY`      | Order created, pricing auto-calculated, pending student payment submission. |
-| `AWAITING_PAYMENT`  | Payment receipt submitted by student; awaiting shop verification.           |
-| `PROOF_APPROVED`    | Payment verified by the shop; document is cleared for printing.             |
-| `IN_PRODUCTION`     | The Edge Daemon has spooled the document to the physical printer.           |
-| `READY_FOR_PICKUP`  | Printing finished successfully. Student is notified.                        |
-| `COMPLETED`         | Student has picked up the document. Transaction closed.                     |
-| `ESCALATED_DISPUTE` | Shop rejected the payment, and the student appealed to System Admins.       |
-
----
-
-## 🔐 Environment Variables
-
-Create a `.env` file in the root of the repository with the following keys:
-
-```env
-NODE_ENV=development
-PORT=3000
-FRONTEND_URL=http://localhost:5173
-ADMIN_URL=http://localhost:3001
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=replace-with-your-rotated-service-role-key
-JWT_SECRET=replace-with-at-least-32-random-characters
-AGENT_JWT_SECRET=replace-with-a-different-32-character-secret
-TOTP_ENCRYPTION_KEY=replace-with-another-32-character-secret
-ENABLE_AI_PERMIT_REVIEW=false
-# Optional. Keep blank while AI permit review is disabled.
-OPENAI_API_KEY=
-
-# Document-safety defaults. MAX_PDF_PAGES is intentionally generous.
-MAX_PDF_PAGES=1000
-MAX_IMAGE_PIXELS=75000000
-MAX_DOCX_ENTRIES=10000
-MAX_DOCX_EXPANDED_BYTES=268435456
-MAX_DOCX_ENTRY_BYTES=134217728
-MAX_NORMALIZED_PDF_BYTES=104857600
-MAX_CONCURRENT_CONVERSIONS=2
-MAX_QUEUED_CONVERSIONS=20
+```powershell
+# Windows PowerShell
+Copy-Item .env.example .env
 ```
 
-## 🖨️ Windows Printer Agent
-
-The printer agent connects PrintFlow to the printers installed on a shop's
-Windows computer. Shop staff use the installer from the dashboard. They do not
-need to download the source code, install Node.js, or run terminal commands.
-
-### Setting up a shop computer
-
-Once the shop has been approved:
-
-1. Connect the printer and make sure it works normally in Windows.
-2. Open **Printer Agent** from the PrintFlow shop dashboard.
-3. Download and run the Windows installer.
-4. Sign in with the approved shop account when the setup page opens.
-5. Go back to the **Printer Agent** page. The computer should show as
-   **Connected**, and the installed printer should appear in the list.
-
-If a printer is missing, use **Rescan printers**. The agent starts automatically
-when the Windows user signs in and reconnects after temporary network problems.
-For now, each shop can have one active printing computer.
-
-### Printing orders
-
-After a payment is approved, the order appears under **Print Ready**. Select the
-orders you want to print, choose a printer, and click **Send to Daemon (Batch)**.
-The agent sends each job to the printer one at a time and reports the result back
-to the dashboard.
-
-Simply connecting a printer does not print everything in the queue. The clerk
-still chooses which orders to send.
-
-PrintFlow accepts PDF, DOCX, JPG, PNG, and WEBP files. Images and DOCX files are
-converted to PDF before printing. Each page is resized to fit the selected
-Short, A4, or Long paper without stretching it, and landscape pages stay in
-landscape.
-
-### Server setup
-
-Apply all of these migrations before deploying this backend revision:
-
-```text
-supabase/migrations/20260917_daemon_devices.sql
-supabase/migrations/20260918_cleanup_revoked_daemon_devices.sql
-supabase/migrations/20260919_encrypt_admin_totp.sql
-supabase/migrations/20260919_admin_sessions.sql
-supabase/migrations/20260919_admin_audit_events.sql
-supabase/migrations/20260924020000_print_jobs.sql
-supabase/migrations/20261109010000_order_operations.sql
+```bash
+# macOS / Linux alternative
+cp .env.example .env
 ```
 
-If batch printing fails and the backend logs report `PGRST205` for
-`public.print_jobs`, run `20260924020000_print_jobs.sql` in the Supabase SQL
-Editor for the backend's project. Pushing application code does not apply SQL
-migrations. This repair preserves existing orders and jobs and grants the
-backend access to claim jobs while preventing direct browser access.
+Configure the core variables below, including `TOTP_ENCRYPTION_KEY`, which the admin service requires even in development. Use the initialized development project and have its maintainer review outstanding migrations before starting the API.
 
-For an existing Render Web Service, add `TOTP_ENCRYPTION_KEY` manually under
-**Environment** and give it a stable random value of at least 32 characters.
-Also keep `AGENT_JWT_SECRET` stable and at least 32 characters,
-`ALLOW_LEGACY_DAEMON_AUTH=false`, and `ENABLE_AI_PERMIT_REVIEW=false` unless the
-privacy review for external permit processing has been completed. The limits
-shown above are optional because the backend has those defaults built in.
+```bash
+npm run start:dev
+```
 
-Set `FRONTEND_URL` and `ADMIN_URL` to the exact HTTPS origins of the two Render
-static sites, without a trailing slash. The new browser sessions use Secure,
-HttpOnly cookies, so redeploy the backend, customer frontend, and admin frontend
-together. The backend must run from the included Dockerfile because it installs
-LibreOffice for DOCX conversion and runs both Node and LibreOffice as a non-root
-user.
+The API listens at [http://localhost:3000](http://localhost:3000). [GET /health](http://localhost:3000/health) reports process status/uptime, not database, email, storage, or printer readiness. Startup checks/creates required private buckets, so use an authorized development project.
+
+### Database migrations
+
+Application startup, builds, Git pushes, and Render deployments do **not** apply [`supabase/migrations/`](supabase/migrations/).
+
+1. Have the maintainer inspect the installed schema/history and identify outstanding files. Do not blindly replay migrations or reset a shared database.
+2. Apply reviewed, outstanding SQL in that project's Supabase SQL Editor with the authorized owner role. Historical filenames have mixed timestamp lengths; review dependency order rather than relying on a naive filename sort.
+3. Commit `20261106000000_payment_order_states.sql` before applying `20261106010000_separate_payment_workflows.sql`; newly added PostgreSQL enum values must be committed before use.
+4. Follow [payment-workflows.md](docs/payment-workflows.md) for print-attempt/payment integration and repairs through `20261108080000_repair_merged_payment_verification.sql`.
+5. Ensure the current migrations `20261109010000_order_operations.sql` and then `20261109020000_shop_queue_and_batch_review.sql` are installed.
+
+Historical device/admin setup includes `20260917_daemon_devices.sql`, `20260918_cleanup_revoked_daemon_devices.sql`, `20260919_encrypt_admin_totp.sql`, `20260919_admin_sessions.sql`, `20260919_admin_audit_events.sql`, and `20260924020000_print_jobs.sql`. Check their installation instead of replaying them automatically.
+
+For `PGRST205` concerning `public.print_jobs`, confirm the project and migration history first. The print-jobs migration is a database setup requirement, not a source-code repair. See [merged-workflow-repair.md](docs/merged-workflow-repair.md) for diagnostics.
+
+### Authentication and initial administrator
+
+The current frontend uses **Supabase Auth directly** for sign-up, email verification, and password recovery. Configure email/password authentication, delivery/SMTP, templates, and redirects in the development Supabase project. `supabase/EMAIL-OTP-SETUP.md` describes an older custom SMTP flow and is not the current runtime setup.
+
+Optional CIT Microsoft sign-in additionally requires the Azure provider, institutional tenant, and backend callback described in [MICROSOFT_LOGIN.md](docs/MICROSOFT_LOGIN.md).
+
+A maintainer provisions the first administrator before portal login. `seed-admin.js` consumes `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD` (at least 12 characters); it is a database-writing maintenance utility, not an automatic installation step. Subsequent administrators use the protected administrator-management workflow. Login requires TOTP enrollment or verification. Do not publish credentials or TOTP enrollment material.
+
+## 6. Environment Variables
+
+Use [`.env.example`](.env.example) as the backend reference. Never commit `.env` or put backend secrets in either browser application's `VITE_` configuration.
+
+### Core API configuration
+
+| Variable                    | Requirement and purpose                                                                                                      |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `SUPABASE_URL`              | Required. Initialized development/production project URL.                                                                    |
+| `SUPABASE_SERVICE_ROLE_KEY` | Required. Server-only privileged key for trusted Auth/database/private Storage operations.                                   |
+| `JWT_SECRET`                | Required; at least 32 random characters for application/admin token signing.                                                 |
+| `TOTP_ENCRYPTION_KEY`       | Required by the admin service in all environments; independent, stable secret of at least 32 characters.                     |
+| `AGENT_JWT_SECRET`          | Required in production; use a separate 32-character-or-longer secret locally too. Development can fall back to `JWT_SECRET`. |
+| `FRONTEND_URL`              | Production requires HTTPS. Local default: `http://localhost:5173`. Supply an origin, not an `/index.html` URL.               |
+| `ADMIN_URL`                 | Production requires HTTPS. Local default: `http://localhost:3001`. Supply the exact portal origin.                           |
+| `NODE_ENV`                  | `development` locally, `production` for production checks and secure cookies.                                                |
+| `PORT`                      | Optional listening port; default `3000`. Render can supply it.                                                               |
+| `TRUST_PROXY`               | Optional trusted hop count or explicit proxy ranges. Defaults to no proxy trust; the Render blueprint uses one trusted hop.  |
+
+Keep secrets stable across redeployments. Replacing the TOTP encryption key without a migration can make existing administrator enrollment data unreadable.
+
+### Optional integrations and compatibility
+
+| Variable                                        | When used                                                                                                                                                                                                              |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SUPABASE_ANON_KEY`                             | Browser-safe project key used by the backend Microsoft OAuth client; required for that integration.                                                                                                                    |
+| `MICROSOFT_TENANT_ID`, `MICROSOFT_CALLBACK_URL` | CIT tenant GUID and backend `/auth/microsoft/callback` URL for Microsoft login.                                                                                                                                        |
+| `TURNSTILE_SECRET_KEY`                          | Cloudflare verification for backend login; pair with the frontend site key and Supabase Auth CAPTCHA settings. Add it to local configuration when enabling CAPTCHA; it is referenced by `render.yaml` and the service. |
+| `ENABLE_AI_PERMIT_REVIEW`, `OPENAI_API_KEY`     | AI review is disabled by default. Enable only with approved privacy/provider configuration and a server-only API key.                                                                                                  |
+| `ALLOW_LEGACY_DAEMON_AUTH`                      | Keep `false` for registered-device production use. The old daemon is only for controlled legacy testing.                                                                                                               |
+| `REQUIRE_IDEMPOTENCY_KEY`                       | Optional strict enforcement of order-operation request keys; coordinate with compatible clients.                                                                                                                       |
+
+The sample retains `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, and `SIGNUP_OTP_SECRET` for the older custom email flow. The current runtime registration/recovery path does not consume them; configure email delivery in Supabase Auth instead.
+
+### Document limits
+
+| Variable                     | Built-in default                                                            |
+| ---------------------------- | --------------------------------------------------------------------------- |
+| `MAX_PDF_PAGES`              | `1000` pages.                                                               |
+| `MAX_IMAGE_PIXELS`           | `75000000` pixels.                                                          |
+| `MAX_DOCX_ENTRIES`           | `10000` archive entries.                                                    |
+| `MAX_DOCX_EXPANDED_BYTES`    | `268435456` bytes.                                                          |
+| `MAX_DOCX_ENTRY_BYTES`       | `134217728` bytes.                                                          |
+| `MAX_NORMALIZED_PDF_BYTES`   | `104857600` bytes.                                                          |
+| `MAX_CONCURRENT_CONVERSIONS` | `2`.                                                                        |
+| `MAX_QUEUED_CONVERSIONS`     | `20`.                                                                       |
+| `LIBREOFFICE_PATH`           | Optional executable path when standard discovery does not find LibreOffice. |
+
+Numeric overrides must be positive integers. The upload limit remains 20 MB. See [document-validation.md](docs/document-validation.md) for checks, error categories, and recovery boundaries.
+
+### Agent releases and maintenance
+
+| Variable                                                   | Purpose                                                                                                                                 |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `AGENT_WINDOWS_VERSION`                                    | Matching installer version label.                                                                                                       |
+| `AGENT_WINDOWS_DOWNLOAD_URL`                               | Optional HTTPS installer URL; preferred over Storage fallback when supplied.                                                            |
+| `AGENT_WINDOWS_STORAGE_PATH`                               | Object path in private `agent-releases`, signed for downloads.                                                                          |
+| `AGENT_WINDOWS_SHA256`, `AGENT_WINDOWS_PUBLISHED_AT`       | Matching checksum and publication timestamp.                                                                                            |
+| `PRINTFLOW_BACKEND_URL`                                    | Source/legacy agent API target; packaged agents also use release/local configuration.                                                   |
+| `ALLOW_PRODUCTION_MAINTENANCE`, `CONFIRM_SUPABASE_PROJECT` | Explicit approved-maintenance opt-in and exact project reference for remote maintenance utilities; not normal API startup requirements. |
+| `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`                  | First-admin provisioning inputs for an authorized maintainer.                                                                           |
+| `PRINTFLOW_AGENT_CONSOLE`                                  | Optional agent console logging in development.                                                                                          |
+| `PRINTFLOW_DAEMON_ACCESS_TOKEN`                            | Mock/legacy daemon input; never commit the token.                                                                                       |
+
+Windows supplies `APPDATA` and installation paths such as `PROGRAMFILES`; these are not required application `.env` entries. Internal setup-process URLs/errors are not hosting configuration.
+
+## 7. Running and Building the Application
+
+| Command                                                 | Purpose                                                                |
+| ------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `npm run start:dev`                                     | Local API with file watching.                                          |
+| `npm run build`                                         | Compile into `dist/`.                                                  |
+| `npm run start:prod`                                    | Run `node dist/src/main` after building; does not install LibreOffice. |
+| `npm test -- --runInBand`                               | Jest unit/integration regressions.                                     |
+| `npm run test:security`                                 | Security regression suite.                                             |
+| `npm run test:payment-sql`, `npm run test:merged-sql`   | Isolated payment/merged-workflow SQL regressions.                      |
+| `npm run test:operations-sql`, `npm run test:queue-sql` | Operation recovery and queue/batch SQL regressions.                    |
+| `npm run test:print-sql`, `npm run test:agent`          | Print/agent regressions.                                               |
+| `npm run lint`                                          | ESLint **with automatic fixes**; can modify source.                    |
+| `npm run format`                                        | Prettier with automatic writes.                                        |
+
+For read-only lint validation: `npx --no-install eslint "{src,apps,libs,test}/**/*.ts"`. To test the production image with an approved development configuration:
+
+```bash
+docker build -t printflow-backend .
+docker run --rm --env-file .env -p 3000:3000 printflow-backend
+```
+
+The image installs LibreOffice/font dependencies, runs as the non-root `node` user, and excludes `.env` via `.dockerignore`.
+
+## 8. Deployment
+
+| Service               | Address / configuration                                                                                                                                 |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Backend API           | [Configured API](https://printflow-backend-wen3.onrender.com) - referenced by both clients; official production designation awaiting team confirmation. |
+| Health                | [GET /health](https://printflow-backend-wen3.onrender.com/health) - returned HTTP 200 with process status on November 10, 2026.                         |
+| Student/shop frontend | [Open PrintFlow](https://printflow-frontend-aje0.onrender.com/index.html).                                                                              |
+| Administrator portal  | Production URL awaiting team confirmation.                                                                                                              |
+
+[`render.yaml`](render.yaml) defines a Render **Docker web service**, the included Dockerfile, and `/health` monitoring. Blueprint `sync: false` entries require operator-supplied values; existing services need newly required settings added manually. Use the exact HTTPS frontend/admin origins without trailing paths for CORS, cookies, and origin validation.
+
+Deploy compatible API, frontend, and admin revisions together after the reviewed migration process. Validate email delivery, TOTP, payment flows, and physical output separately; a healthy process does not prove those integrations work.
+
+## 9. Related Repositories
+
+- [Project overview](https://github.com/JudeeeeeV/printflow)
+- [Student and shop frontend](https://github.com/JudeeeeeV/printflow-frontend)
+- [Backend API and agent](https://github.com/JudeeeeeV/printflow-backend)
+- [Administrator portal](https://github.com/JudeeeeeV/printflow-admin)
+
+## 10. Windows Printer Agent
+
+### Shop-computer installation
+
+Shop staff use the installer; no Node.js/source checkout/terminal is required.
+
+1. Connect the printer and confirm it works in Windows.
+2. Sign in with an approved shop account and open **Printer Agent** in the dashboard.
+3. Download/run the Windows installer on the printer-connected computer.
+4. Sign in when setup opens and enable startup when requested.
+5. Confirm the computer is **Connected** and detected printers are listed. Use **Rescan printers** when needed.
+
+The agent starts at Windows user sign-in and reconnects after temporary problems. The current registration service allows up to ten non-revoked computers per shop. Registration alone does not dispatch the queue.
+
+### Printing and fulfillment
+
+GCash verification authorizes production without separate acceptance. Cash-on-pickup retains explicit acceptance while payment remains due. Eligible orders appear in **Print Ready**. Review/select orders, choose a printer, and use the reviewed batch-dispatch flow.
+
+PDF, DOCX, PNG, JPG/JPEG, and WEBP uploads normalize to PDF on the API host. Pages fit the chosen Short/A4/Long size and orientation without stretching. A successful agent submission means Windows received the command, not that paper was produced. Operators confirm output to mark ready for pickup. GCash retains confirmed handover; recording eligible cash collection completes a cash order without another cash handover step.
+
+See [PRINT_FULFILLMENT_PROTOCOL.md](docs/PRINT_FULFILLMENT_PROTOCOL.md) and [payment-workflows.md](docs/payment-workflows.md) for attempt history, uncertain outcomes, output confirmation, reprints, and collection eligibility.
 
 ### Development and releases
-
-To run the current agent from source while developing:
 
 ```bash
 npm run agent
 ```
 
-The older `npm run daemon` command is kept only for legacy local testing. It
-starts the old terminal-based daemon and should not be used by shop staff.
+Use Windows and set `PRINTFLOW_BACKEND_URL` for the intended API. `npm run daemon` is the old terminal-based daemon, not the shop installation workflow.
 
-Build the Windows installer from a Windows development computer:
+Build the packaged Windows installer on a Windows development computer:
 
 ```bash
 npm run agent:build:windows
 ```
 
-The finished installer and its checksum are placed in `agent/release/`. This
-folder is ignored by Git. The installer already contains the runtime and
-printing dependencies needed by the shop computer.
+The installer/checksum appear in ignored `agent/release/`. The package includes its runtime and printing dependencies. `npm run agent:finalize:windows` supports the repository release-finalization workflow.
 
-Publish the installer to the private Supabase `agent-releases` bucket:
+An authorized maintainer publishes to private Storage with `npm run agent:publish:windows`. Remote publishing requires the maintenance guard's approved window and exact project confirmation:
 
 ```powershell
-# Required only for the approved remote maintenance window.
 $env:ALLOW_PRODUCTION_MAINTENANCE = 'true'
 $env:CONFIRM_SUPABASE_PROJECT = 'your-project-reference'
+npm run agent:publish:windows -- --dry-run
+# After reviewing the target and receiving release authorization:
 npm run agent:publish:windows
+Remove-Item Env:ALLOW_PRODUCTION_MAINTENANCE, Env:CONFIRM_SUPABASE_PROJECT
 ```
 
-Remove those two maintenance values from your shell after publishing with
-`Remove-Item Env:ALLOW_PRODUCTION_MAINTENANCE, Env:CONFIRM_SUPABASE_PROJECT`.
-You can append `-- --dry-run` to validate the target without uploading anything.
+Set the matching `AGENT_WINDOWS_STORAGE_PATH`, `AGENT_WINDOWS_VERSION`, `AGENT_WINDOWS_SHA256`, and `AGENT_WINDOWS_PUBLISHED_AT` on the deployed API and redeploy. Alternatively use `AGENT_WINDOWS_DOWNLOAD_URL` for an externally hosted installer. Never commit installer binaries, release directories, or privileged keys.
 
-After publishing, copy the printed storage path, version, checksum, and
-publication time into the matching `AGENT_WINDOWS_*` environment variables on
-the deployed backend. Redeploy the backend so the **Printer Agent** page offers
-the new installer. You can also use `AGENT_WINDOWS_DOWNLOAD_URL` when the
-installer is hosted somewhere else.
+## Contributors
 
----
-
-## 👥 Contributors
-
-Proudly developed by the PrintFlow team:
-
-- **Jude Mikael Valencia**
-- **Karol Vincent Bebedor**
-- **Noeh Arbee Boiser**
-- **Aldrin Suse**
+- Jude Mikael Valencia
+- Karol Vincent Bebedor
+- Noeh Arbee Boiser
+- Aldrin Suse
