@@ -2,6 +2,7 @@ services:
   - type: web
     name: printflow-backend
     runtime: docker
+    autoDeployTrigger: checksPass
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     envVars:
